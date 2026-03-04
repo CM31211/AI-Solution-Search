@@ -414,28 +414,48 @@
       input.value = "";
 
       const thinkingBubble = addBubble("Thinking...", "assistant", "thinking");
-
-      const res = await fetch("/chat", {
+      
+      try
+      {
+        const res = await fetch("/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: msg })
-      });
-
-      const data = await res.json();
-      thinkingBubble.remove();
-
-      if (!res.ok || data.error) {
-        addBubble("Something went wrong while processing your request. Please try again.", "assistant");
-      } else {
-        const assistantBubble = addBubble(data.reply, "assistant", "", true);
-
-        const offset = 300; // adjust this value if needed
-        const bubbleTop = assistantBubble.offsetTop;
-        messagesDiv.scrollTo({
-          top: bubbleTop - offset,
-          behavior: "smooth"
         });
+
+        const contentType = res.headers.get("content-type") || "";
+        let data;
+        if (contentType.includes("application/json")) {
+          data = await res.json();
+        } else {
+          // if it's HTML or plain text, read it and show short error
+          const text = await res.text();
+          console.error("Non-JSON response from /chat:", text);
+          throw new Error("Server returned non-JSON response. Check server logs.");
+        }
+        
+        thinkingBubble.remove();
+
+        if (!res.ok || data.error) {
+          addBubble("Something went wrong while processing your request. Please try again.", "assistant");
+        } else {
+          const assistantBubble = addBubble(data.reply, "assistant", "", true);
+
+          const offset = 300; // adjust this value if needed
+          const bubbleTop = assistantBubble.offsetTop;
+          messagesDiv.scrollTo({
+            top: bubbleTop - offset,
+            behavior: "smooth"
+          });
+        }
+      } catch(err){
+        thinkingBubble.remove();
+        console.error("Chat request failed:", err);
+        addBubble("Something went wrong while processing your request. Please try again.", "assistant");
       }
+
+
+      
     }
 
     async function resetChat() {
