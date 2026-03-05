@@ -19,7 +19,7 @@ def health():
     return {"status": "ok"}
 
 
-DEFAULT_SERVICE_LINE = "General"
+DEFAULT_SERVICE_LINE = "Default"
 # Load from environment variables
 SERVICE_LINE_CONTACTS = json.loads(
     os.environ.get("SERVICE_LINE_CONTACTS", "{}")
@@ -49,8 +49,8 @@ def classify_service_line(user_question: str) -> str:
 
 
 def append_contact_note(reply_text: str, service_line: str, contact_map: dict) -> str:
-    contact = contact_map.get(service_line) or contact_map.get("General", "Sarah")
-    note = f"\n\n**Note:** For more information, contact **{contact}**."
+    contact = contact_map.get(service_line) or contact_map.get("Default", "Kristen Lewis")
+    note = f"\n\nFor further discussion or service-specific inquiries, please contact **{contact}**."
     return (reply_text or "").rstrip() + note
 
 @app.route("/feedback", methods=["POST"])
