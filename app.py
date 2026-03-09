@@ -4,6 +4,7 @@ from flask import Flask, render_template, request, jsonify, session
 from azure.ai.projects import AIProjectClient
 from azure.identity import DefaultAzureCredential
 from azure.ai.agents.models import ListSortOrder
+from azure.storage.blob import BlobServiceClient
 from datetime import datetime
 from dotenv import load_dotenv
 import time
@@ -20,13 +21,32 @@ def health():
 
 
 DEFAULT_SERVICE_LINE = "Default"
-# Load from environment variables
-SERVICE_LINE_CONTACTS = json.loads(
-    os.environ.get("SERVICE_LINE_CONTACTS", "{}")
-)
 
-SERVICE_LINE_KEYWORDS = json.loads(
-    os.environ.get("SERVICE_LINE_KEYWORDS", "{}")
+# Azure Blob Storage config (no network calls at startup)
+_STORAGE_ACCOUNT_URL = os.environ.get("AZURE_STORAGE_ACCOUNT_URL")
+_STORAGE_CONNECTION_STRING = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+_BLOB_CONTAINER = os.environ.get("BLOB_CONTAINER")
+
+if _STORAGE_CONNECTION_STRING:
+    _blob_service = BlobServiceClient.from_connection_string(_STORAGE_CONNECTION_STRING)
+else:
+    _blob_service = BlobServiceClient(account_url=_STORAGE_ACCOUNT_URL, credential=DefaultAzureCredential())
+
+def _load_json_from_blob(blob_name: str) -> dict:
+    blob_client = _blob_service.get_blob_client(container=_BLOB_CONTAINER, blob=blob_name)
+    data = blob_client.download_blob().readall()
+    return json.loads(data.decode("utf-8"))
+
+# Load from environment variables
+SERVICE_LINE_CONTACTS = json.loads(os.environ.get("SERVICE_LINE_CONTACTS", "{}"))
+SERVICE_LINE_KEYWORDS = json.loads(os.environ.get("SERVICE_LINE_KEYWORDS", "{}"))
+
+# Eagerly load blob data at startup
+PARTNERS_DIRECTORY = _load_json_from_blob(os.environ.get("PARTNERS_DIRECTORY_BLOB"))
+SKILLS_DATABASE = _load_json_from_blob(os.environ.get("SKILLS_DATABASE_BLOB"))
+ALL_NAMES = set(
+    [p["Name"] for p in PARTNERS_DIRECTORY["partners"] if "Name" in p] +
+    [s["Legal_Full_Name"] for s in SKILLS_DATABASE["Report_Entry"] if "Legal_Full_Name" in s]
 )
 
 def classify_service_line(user_question: str) -> str:
@@ -81,6 +101,7 @@ project = AIProjectClient(
     endpoint=PROJECT_ENDPOINT
 )
 
+# Eagerly load agent at startup
 agent = project.agents.get_agent(AGENT_ID)
 
 
@@ -90,6 +111,102 @@ def get_or_create_thread_id() -> str:
         thread = project.agents.threads.create()
         session["thread_id"] = thread.id
     return session["thread_id"]
+
+
+def validate_sme_names(text: str) -> str:
+    """
+    For each Sales / Technical SME section independently:
+      - Splits the section body into segments (blank-line separated).
+      - Each segment is classified as valid or invalid by:
+          * Name: blocks  → looks up the name in ALL_NAMES
+          * Plain paragraphs → scans text for any known name from ALL_NAMES
+          * Agent's own "No specific SME..." placeholder → always invalid
+      - If at least one segment is valid: keeps only valid segments.
+      - If none are valid: replaces entire section with a single not-found message.
+    """
+    _all_names_lower = {n.lower(): n for n in ALL_NAMES}
+    _not_found_msg = "No specific SME could be identified from the available data for this category ."
+
+    def classify_segment(seg: str):
+        """Return True if this segment describes a valid SME, False otherwise."""
+        stripped = seg.strip()
+        if not stripped:
+            return None  # blank — skip
+
+        # Check for Name: prefix
+        name_match = re.match(r'-?\s*Name:\s*([^\n]+)', stripped, re.IGNORECASE)
+        if name_match:
+            name = name_match.group(1).strip()
+            if name.lower().startswith("no specific sme"):
+                return False  # agent's own placeholder
+            return name.lower() in _all_names_lower
+
+        # Plain paragraph — scan for any known name
+        seg_lower = stripped.lower()
+        return any(n in seg_lower for n in _all_names_lower)
+
+    # Regex to detect the start of a main response section — these must never be removed
+    _main_section_re = re.compile(
+        r'summary of client problem|how eisneramper can help|'
+        r'relevant past experience|case studies|'
+        r'recommended smes or teams|suggested next steps',
+        re.IGNORECASE
+    )
+
+    def process_sme_body(body: str) -> str:
+        """Filter all SME entries in one section body, preserving any trailing main sections."""
+        segments = re.split(r'\n{2,}', body)
+
+        sme_segs = []   # segments belonging to this SME section
+        tail_segs = []  # everything from the next main section header onwards
+        in_tail = False
+
+        for seg in segments:
+            stripped = seg.strip()
+            if not stripped:
+                continue
+            # Once we hit a main section header, stop SME processing
+            if not in_tail and _main_section_re.search(stripped):
+                in_tail = True
+            if in_tail:
+                tail_segs.append(seg)
+            else:
+                result = classify_segment(seg)
+                if result is not None:
+                    sme_segs.append((seg, result))
+
+        # Build the filtered SME part
+        if not sme_segs:
+            sme_part = ''
+        else:
+            valid_segs = [seg for seg, is_valid in sme_segs if is_valid]
+            if not valid_segs:
+                sme_part = f"\nName: {_not_found_msg}\n"
+            else:
+                sme_part = '\n\n'.join(valid_segs) + '\n'
+
+        # Re-attach any main sections that were cut off
+        tail_part = ('\n\n' + '\n\n'.join(tail_segs)) if tail_segs else ''
+
+        return sme_part + tail_part
+
+    # Split text on Sales/Technical section headers, keeping headers as delimiters.
+    # Handles: "Sales:", "Technical:", "Sales SMEs:", "**Technical SMEs:**", "### Sales:" etc.
+    header_re = re.compile(
+        r'(\*{0,3}#{0,3}\s*(?:Sales|Technical)(?:\s+SME[s]?)?\s*(?:\*{0,3})?\s*:\s*(?:\*{0,3})?\s*\n)',
+        re.IGNORECASE
+    )
+    parts = header_re.split(text)
+
+    # parts layout: [pre_text, header1, body1, header2, body2, ...]
+    result = [parts[0]]
+    for i in range(1, len(parts), 2):
+        header = parts[i]
+        body   = parts[i + 1] if i + 1 < len(parts) else ''
+        result.append(header)
+        result.append(process_sme_body(body))
+
+    return ''.join(result)
 
 
 def clean_agent_response(text: str) -> str:
@@ -143,43 +260,57 @@ def chat():
     if not user_message:
         return jsonify({"error": "Empty message"}), 400
 
-    thread_id = get_or_create_thread_id()
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            thread_id = get_or_create_thread_id()
 
-    # Add user message
-    project.agents.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=user_message + " Please do not hallucinate and give accurate answers."
-    )
+            # Add user message
+            project.agents.messages.create(
+                thread_id=thread_id,
+                role="user",
+                content=user_message
+            )
 
-    # Run agent
-    run = project.agents.runs.create_and_process(
-        thread_id=thread_id,
-        agent_id=agent.id
-    )
+            # Run agent
+            run = project.agents.runs.create_and_process(
+                thread_id=thread_id,
+                agent_id=agent.id
+            )
 
-    if run.status == "failed":
-        return jsonify({"error": str(run.last_error)}), 500
+            if run.status == "failed":
+                print(f"Agent run failed: {run.last_error}")
+                return jsonify({"error": "Agent run failed"}), 500
 
-    # Get latest assistant reply
-    messages = list(project.agents.messages.list(
-        thread_id=thread_id,
-        order=ListSortOrder.ASCENDING
-    ))
+            # Get latest assistant reply
+            messages = list(project.agents.messages.list(
+                thread_id=thread_id,
+                order=ListSortOrder.ASCENDING
+            ))
 
-    raw_reply = ""
-    for msg in reversed(messages):
-        if msg.role == "assistant" and msg.text_messages:
-            raw_reply = msg.text_messages[-1].text.value
-            break
+            raw_reply = ""
+            for msg in reversed(messages):
+                if msg.role == "assistant" and msg.text_messages:
+                    raw_reply = msg.text_messages[-1].text.value
+                    break
 
-    assistant_reply = clean_agent_response(raw_reply)
-    # 2) Decide service line
-    service_line = classify_service_line(user_message) 
-    # 4) Append note ALWAYS
-    assistant_reply = append_contact_note(assistant_reply, service_line,SERVICE_LINE_CONTACTS)    
+            assistant_reply = clean_agent_response(raw_reply)
+            assistant_reply = validate_sme_names(assistant_reply)
+            service_line = classify_service_line(user_message)
+            assistant_reply = append_contact_note(assistant_reply, service_line, SERVICE_LINE_CONTACTS)
 
-    return jsonify({"reply": assistant_reply}),200
+            return jsonify({"reply": assistant_reply}), 200
+
+        except ConnectionResetError as e:
+            print(f"Connection reset on attempt {attempt}/{max_retries}: {e}")
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)  # 2s, 4s backoff
+            else:
+                return jsonify({"error": "Something went wrong. Please try again."}), 500
+
+        except Exception as e:
+            print(f"Chat error: {e}")
+            return jsonify({"error": "Something went wrong. Please try again."}), 500
 
 
 if __name__ == "__main__":

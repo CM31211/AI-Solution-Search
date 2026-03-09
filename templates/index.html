@@ -415,13 +415,18 @@
 
       const thinkingBubble = addBubble("Thinking...", "assistant", "thinking");
       
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120000);
+
       try
       {
         const res = await fetch("/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: msg })
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: msg }),
+          signal: controller.signal
         });
+        clearTimeout(timeoutId);
 
         const contentType = res.headers.get("content-type") || "";
         let data;
