@@ -1,6 +1,6 @@
 flask
 gunicorn
-azure-ai-projects
-azure-identity
-azure-ai-agents
+azure-ai-projects==1.0.0
+azure-identity==1.25.2
+azure-ai-agents==1.1.0
 python-dotenv
