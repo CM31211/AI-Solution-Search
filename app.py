@@ -9,6 +9,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 import time
 import json
+import threading
 
 # ---- Load .env file for local dev (ignored on Azure if no .env file exists) ----
 load_dotenv()
@@ -41,13 +42,10 @@ def _load_json_from_blob(blob_name: str) -> dict:
 SERVICE_LINE_CONTACTS = json.loads(os.environ.get("SERVICE_LINE_CONTACTS", "{}"))
 SERVICE_LINE_KEYWORDS = json.loads(os.environ.get("SERVICE_LINE_KEYWORDS", "{}"))
 
-# Eagerly load blob data at startup
-PARTNERS_DIRECTORY = _load_json_from_blob(os.environ.get("PARTNERS_DIRECTORY_BLOB"))
-SKILLS_DATABASE = _load_json_from_blob(os.environ.get("SKILLS_DATABASE_BLOB"))
-ALL_NAMES = set(
-    [p["Name"] for p in PARTNERS_DIRECTORY["partners"] if "Name" in p] +
-    [s["Legal_Full_Name"] for s in SKILLS_DATABASE["Report_Entry"] if "Legal_Full_Name" in s]
-)
+# Globals populated by background startup thread
+PARTNERS_DIRECTORY = None
+SKILLS_DATABASE = None
+ALL_NAMES = set()
 
 def classify_service_line(user_question: str) -> str:
     q = (user_question or "").lower()
@@ -68,7 +66,16 @@ def classify_service_line(user_question: str) -> str:
     return best if scores[best] > 0 else DEFAULT_SERVICE_LINE
 
 
+_SCENARIO_RESPONSE_MARKERS = re.compile(
+    r'how eisneramper can help|recommended smes|suggested next steps|'
+    r'relevant past experience|summary of client problem',
+    re.IGNORECASE
+)
+
 def append_contact_note(reply_text: str, service_line: str, contact_map: dict) -> str:
+    # Only append contact note for structured scenario responses, not greetings/conversational replies
+    if not _SCENARIO_RESPONSE_MARKERS.search(reply_text or ""):
+        return (reply_text or "").rstrip()
     contact = contact_map.get(service_line) or contact_map.get("Default", "Kristen Lewis")
     note = f"\n\nFor further discussion or service-specific inquiries, please contact **{contact}**."
     return (reply_text or "").rstrip() + note
@@ -101,8 +108,29 @@ project = AIProjectClient(
     endpoint=PROJECT_ENDPOINT
 )
 
-# Eagerly load agent at startup
-agent = project.agents.get_agent(AGENT_ID)
+# Globals for agent (populated by background startup thread)
+agent = None
+_startup_ready = threading.Event()
+_startup_error = None
+
+def _background_startup():
+    global PARTNERS_DIRECTORY, SKILLS_DATABASE, ALL_NAMES, agent, _startup_error
+    try:
+        PARTNERS_DIRECTORY = _load_json_from_blob(os.environ.get("PARTNERS_DIRECTORY_BLOB"))
+        SKILLS_DATABASE    = _load_json_from_blob(os.environ.get("SKILLS_DATABASE_BLOB"))
+        ALL_NAMES.update(
+            [p["Name"] for p in PARTNERS_DIRECTORY["partners"] if "Name" in p] +
+            [s["Legal_Full_Name"] for s in SKILLS_DATABASE["Report_Entry"] if "Legal_Full_Name" in s]
+        )
+        agent = project.agents.get_agent(AGENT_ID)
+        print("Background startup complete.")
+    except Exception as e:
+        _startup_error = e
+        print(f"Background startup failed: {e}")
+    finally:
+        _startup_ready.set()
+
+threading.Thread(target=_background_startup, daemon=True).start()
 
 
 def get_or_create_thread_id() -> str:
@@ -125,7 +153,7 @@ def validate_sme_names(text: str) -> str:
       - If none are valid: replaces entire section with a single not-found message.
     """
     _all_names_lower = {n.lower(): n for n in ALL_NAMES}
-    _not_found_msg = "No specific SME could be identified from the available data for this category ."
+    _not_found_msg = "No verified SME found in our directory for this category."
 
     def classify_segment(seg: str):
         """Return True if this segment describes a valid SME, False otherwise."""
@@ -256,6 +284,11 @@ def reset():
 
 @app.route("/chat", methods=["POST"])
 def chat():
+    _startup_ready.wait()  # block until background startup finishes
+    if _startup_error:
+        print(f"Startup error prevented chat: {_startup_error}")
+        return jsonify({"error": "Service is not ready. Please try again shortly."}), 503
+
     user_message = request.json.get("message", "").strip()
     if not user_message:
         return jsonify({"error": "Empty message"}), 400
