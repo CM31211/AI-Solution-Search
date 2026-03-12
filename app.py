@@ -5,11 +5,13 @@ from azure.ai.projects import AIProjectClient
 from azure.identity import DefaultAzureCredential
 from azure.ai.agents.models import ListSortOrder
 from azure.storage.blob import BlobServiceClient
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 import time
 import json
 import threading
+import jwt
+from jwt import PyJWKClient
 
 # ---- Load .env file for local dev (ignored on Azure if no .env file exists) ----
 load_dotenv()
@@ -22,6 +24,8 @@ def health():
 
 
 DEFAULT_SERVICE_LINE = "Default"
+# [LOGGING] Fallback username when Azure Easy Auth headers are absent (e.g. local dev)
+_UNAUTHENTICATED_USER = "Unknown"
 
 # Azure Blob Storage config (no network calls at startup)
 _STORAGE_ACCOUNT_URL = os.environ.get("AZURE_STORAGE_ACCOUNT_URL")
@@ -37,6 +41,56 @@ def _load_json_from_blob(blob_name: str) -> dict:
     blob_client = _blob_service.get_blob_client(container=_BLOB_CONTAINER, blob=blob_name)
     data = blob_client.download_blob().readall()
     return json.loads(data.decode("utf-8"))
+
+# [LOGGING] Separate container for conversation logs (read from environment variable)
+_LOGS_CONTAINER = os.environ.get("LOGS_BLOB_CONTAINER")
+
+
+def _save_conversation_log(thread_id: str, user: str, query: str, response: str) -> None:
+    """
+    [LOGGING] Appends one query/response exchange to the conversation JSON file for this thread.
+    Blob path: logs/<MMDDYYYY>/<username>/<thread_id>.json
+    - feedback field is absent initially; added later when user clicks like/dislike.
+    Creates the file if it doesn't exist; appends to it if it does.
+    Runs silently — logs errors but never raises, so chat flow is never interrupted.
+    """
+    try:
+        now         = datetime.now(timezone.utc)
+        date_folder = now.strftime("%m%d%Y")                       # e.g. 03122026
+        # [LOGGING] Strip domain from email to get clean username for folder name
+        # When running locally, Easy Auth is not present so user defaults to "Unknown"
+        username    = user.split("@")[0] if "@" in user else user  # e.g. chandan.mishra or Unknown
+        blob_name   = f"{date_folder}/{username}/{thread_id}.json"
+
+        blob_client = _blob_service.get_blob_client(container=_LOGS_CONTAINER, blob=blob_name)
+
+        # Load existing conversation if the blob already exists
+        try:
+            existing = blob_client.download_blob().readall()
+            conversation = json.loads(existing.decode("utf-8"))
+        except Exception:
+            # Blob doesn't exist yet — start a new conversation record
+            conversation = {
+                "user":      username,
+                "thread_id": thread_id,
+                "date":      date_folder,
+                "messages":  []
+            }
+
+        # Append this exchange — no feedback field yet, added only if user clicks like/dislike
+        conversation["messages"].append({
+            "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "query":     query,
+            "response":  response
+        })
+
+        blob_client.upload_blob(
+            json.dumps(conversation, indent=2),
+            overwrite=True,
+            content_settings=None
+        )
+    except Exception as e:
+        print(f"[LOGGING] Failed to save conversation log: {e}")
 
 # Load from environment variables
 SERVICE_LINE_CONTACTS = json.loads(os.environ.get("SERVICE_LINE_CONTACTS", "{}"))
@@ -83,16 +137,123 @@ def append_contact_note(reply_text: str, service_line: str, contact_map: dict) -
 @app.route("/feedback", methods=["POST"])
 def feedback():
     data = request.json
-    feedback_type = data.get("feedback")
-    response_text = data.get("response")
 
-    print("FEEDBACK RECEIVED")
-    print("Type:", feedback_type)
-    print("Response snippet:", response_text[:200])
+    # [LOGGING] Read user identity from Easy Auth header (same as chat route)
+    user = (
+        request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME") or
+        request.headers.get("X-MS-CLIENT-PRINCIPAL-ID") or
+        _UNAUTHENTICATED_USER
+    )
+
+    # [LOGGING] Fire-and-forget background thread — never blocks response
+    threading.Thread(target=_embed_feedback_in_conversation, args=(user, data), daemon=True).start()
 
     return {"status": "ok"}
 
+
+def _embed_feedback_in_conversation(user: str, data: dict) -> None:
+    """
+    [LOGGING] Finds the matching message in the conversation log by message_timestamp
+    and embeds feedback + feedback_timestamp directly into it.
+    Blob path: logs/<MMDDYYYY>/<username>/<thread_id>.json
+    - message_timestamp identifies exactly which response was liked/disliked.
+    - All responses without feedback have no feedback field — easy to differentiate on display.
+    Runs silently — logs errors but never raises.
+    """
+    try:
+        username          = user.split("@")[0] if "@" in user else user
+        thread_id         = data.get("thread_id", "unknown")
+        message_timestamp = data.get("message_timestamp", "")
+        feedback_type     = data.get("feedback")           # "like" or "dislike"
+        feedback_timestamp = data.get("feedback_timestamp")
+
+        # [LOGGING] Derive conversation date from message_timestamp to locate the correct blob
+        msg_dt      = datetime.fromisoformat(message_timestamp.replace("Z", "+00:00"))
+        date_folder = msg_dt.strftime("%m%d%Y")
+        blob_name   = f"{date_folder}/{username}/{thread_id}.json"
+
+        blob_client  = _blob_service.get_blob_client(container=_LOGS_CONTAINER, blob=blob_name)
+        existing     = blob_client.download_blob().readall()
+        conversation = json.loads(existing.decode("utf-8"))
+
+        # [LOGGING] Find the matching message and embed feedback into it.
+        # Normalize to seconds precision before comparing — backend stores without milliseconds
+        # (e.g. "2026-03-12T16:35:12Z") but frontend sends with milliseconds ("2026-03-12T16:35:12.727Z")
+        def _to_seconds(ts: str) -> str:
+            return ts[:19] if ts else ""
+
+        updated = False
+        for message in conversation["messages"]:
+            if _to_seconds(message.get("timestamp", "")) == _to_seconds(message_timestamp):
+                message["feedback"]           = feedback_type
+                message["feedback_timestamp"] = feedback_timestamp
+                updated = True
+                break
+
+        if updated:
+            blob_client.upload_blob(json.dumps(conversation, indent=2), overwrite=True)
+            print(f"[LOGGING] Feedback '{feedback_type}' embedded in {blob_name}")
+        else:
+            print(f"[LOGGING] No matching message found for timestamp {message_timestamp} in {blob_name}")
+
+    except Exception as e:
+        print(f"[LOGGING] Failed to embed feedback: {e}")
+
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-key-change-me")
+
+# ---- Azure AD / Teams SSO config ----
+AAD_TENANT_ID = os.environ.get("AAD_TENANT_ID", "")
+AAD_CLIENT_ID = os.environ.get("AAD_CLIENT_ID", "")
+
+_jwks_client = None
+_jwks_client_lock = threading.Lock()
+
+def _get_jwks_client() -> PyJWKClient:
+    global _jwks_client
+    if _jwks_client is None:
+        with _jwks_client_lock:
+            if _jwks_client is None:
+                _jwks_client = PyJWKClient(
+                    f"https://login.microsoftonline.com/{AAD_TENANT_ID}/discovery/v2.0/keys",
+                    cache_keys=True
+                )
+    return _jwks_client
+
+def _validate_teams_token(token: str) -> bool:
+    """Validate an AAD Bearer token issued by Teams SSO. Returns True if valid."""
+    if not AAD_TENANT_ID or not AAD_CLIENT_ID:
+        return False
+    try:
+        signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
+        jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=AAD_CLIENT_ID,
+            issuer=[
+                f"https://sts.windows.net/{AAD_TENANT_ID}/",
+                f"https://login.microsoftonline.com/{AAD_TENANT_ID}/v2.0"
+            ],
+            options={"require": ["exp", "aud", "iss"]}
+        )
+        return True
+    except Exception as e:
+        print(f"Teams token validation failed: {e}")
+        return False
+
+def _check_teams_token() -> tuple:
+    """
+    If an Authorization: Bearer header is present, validate it.
+    Returns (ok, error_response).
+    If no header: passes through — browser / Easy Auth path.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header:
+        return True, None   # no token — browser path, Easy Auth handles it
+    token = auth_header.removeprefix("Bearer ").strip()
+    if not _validate_teams_token(token):
+        return False, (jsonify({"error": "Unauthorized"}), 401)
+    return True, None
 
 # ---- Azure AI Foundry setup (loaded from .env locally / App Settings on Azure) ----
 PROJECT_ENDPOINT = os.getenv("PROJECT_ENDPOINT")
@@ -278,16 +439,30 @@ def index():
 
 @app.route("/reset", methods=["POST"])
 def reset():
+    ok, err = _check_teams_token()
+    if not ok:
+        return err
     session.pop("thread_id", None)
     return jsonify({"ok": True})
 
 
 @app.route("/chat", methods=["POST"])
 def chat():
+    ok, err = _check_teams_token()
+    if not ok:
+        return err
     _startup_ready.wait()  # block until background startup finishes
     if _startup_error:
         print(f"Startup error prevented chat: {_startup_error}")
         return jsonify({"error": "Service is not ready. Please try again shortly."}), 503
+
+    # Azure Easy Auth injects the logged-in user's identity into every request header
+    logged_in_user = (
+        request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME") or
+        request.headers.get("X-MS-CLIENT-PRINCIPAL-ID") or
+        _UNAUTHENTICATED_USER
+    )
+    print(f"User: {logged_in_user}")
 
     user_message = request.json.get("message", "").strip()
     if not user_message:
@@ -332,7 +507,10 @@ def chat():
             service_line = classify_service_line(user_message)
             assistant_reply = append_contact_note(assistant_reply, service_line, SERVICE_LINE_CONTACTS)
 
-            return jsonify({"reply": assistant_reply}), 200
+            # [LOGGING] Fire-and-forget background thread — logging never blocks or affects chat response
+            threading.Thread(target=_save_conversation_log, args=(thread_id, logged_in_user, user_message, assistant_reply), daemon=True).start()
+
+            return jsonify({"reply": assistant_reply, "thread_id": thread_id}), 200
 
         except ConnectionResetError as e:
             print(f"Connection reset on attempt {attempt}/{max_retries}: {e}")

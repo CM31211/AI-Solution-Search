@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <title>AI Solution Search</title>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://res.cdn.office.net/teams-js/2.22.0/js/MicrosoftTeams.min.js"></script>
   <style>
     body { font-family: Arial, sans-serif; margin: 0; background: #f5f5f5; }
 
@@ -311,7 +312,7 @@
 
     chatLauncher.addEventListener("click", () => toggleChat());
 
-    function addBubble(text, who, extraClass = "", allowFeedback = false) {
+    function addBubble(text, who, extraClass = "", allowFeedback = false, query = "", threadId = "") {
       const bubble = document.createElement("div");
       bubble.className = `bubble ${who} ${extraClass}`;
 
@@ -341,6 +342,9 @@
         bubble.innerHTML = formattedText;
 
         if (allowFeedback) {
+          // [LOGGING] Capture timestamp when response is rendered — identifies which response was liked/disliked
+          const messageTimestamp = new Date().toISOString();
+
           const feedbackDiv = document.createElement("div");
           feedbackDiv.style.marginTop = "8px";
           feedbackDiv.style.fontSize = "16px";
@@ -374,12 +378,12 @@
           }
 
           thumbsUp.onclick = () => {
-            sendFeedback("up", text);
+            sendFeedback("like", text, threadId, messageTimestamp, query);
             disableFeedback(thumbsUp, thumbsDown);
           };
 
           thumbsDown.onclick = () => {
-            sendFeedback("down", text);
+            sendFeedback("dislike", text, threadId, messageTimestamp, query);
             disableFeedback(thumbsDown, thumbsUp);
           };
 
@@ -395,13 +399,46 @@
       return bubble;
     }
 
-    async function sendFeedback(type, responseText) {
+    // ---- Teams Silent SSO ----
+    let _teamsToken = null;
+
+    async function _getTeamsToken() {
+      return new Promise((resolve) => {
+        microsoftTeams.authentication.getAuthToken({
+          successCallback: (token) => { _teamsToken = token; resolve(token); },
+          failureCallback: ()      => resolve(null)
+        });
+      });
+    }
+
+    (async function initTeams() {
+      try {
+        await microsoftTeams.app.initialize();
+        // Running inside Teams — acquire token silently
+        await _getTeamsToken();
+      } catch {
+        // Not in Teams context — browser path, Easy Auth handles authentication
+        _teamsToken = null;
+      }
+    })();
+
+    function _authHeaders() {
+      const h = { "Content-Type": "application/json" };
+      if (_teamsToken) h["Authorization"] = "Bearer " + _teamsToken;
+      return h;
+    }
+    // ---- End Teams Silent SSO ----
+
+    // [LOGGING] Send feedback — backend embeds it directly into the conversation log
+    async function sendFeedback(type, responseText, threadId, messageTimestamp, query) {
       await fetch("/feedback", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: _authHeaders(),
         body: JSON.stringify({
-          feedback: type,
-          response: responseText
+          feedback:           type,                       // "like" or "dislike"
+          thread_id:          threadId,                   // locates the conversation log blob
+          message_timestamp:  messageTimestamp,           // identifies the exact response within the conversation
+          feedback_timestamp: new Date().toISOString()    // when user clicked
         })
       });
     }
@@ -420,13 +457,24 @@
 
       try
       {
-        const res = await fetch("/chat", {
+        let res = await fetch("/chat", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: _authHeaders(),
           body: JSON.stringify({ message: msg }),
           signal: controller.signal
         });
         clearTimeout(timeoutId);
+
+        // Token expired — refresh silently and retry once
+        if (res.status === 401 && _teamsToken) {
+          await _getTeamsToken();
+          res = await fetch("/chat", {
+            method: "POST",
+            headers: _authHeaders(),
+            body: JSON.stringify({ message: msg }),
+            signal: controller.signal
+          });
+        }
 
         const contentType = res.headers.get("content-type") || "";
         let data;
@@ -438,13 +486,14 @@
           console.error("Non-JSON response from /chat:", text);
           throw new Error("Server returned non-JSON response. Check server logs.");
         }
-        
+
         thinkingBubble.remove();
 
         if (!res.ok || data.error) {
           addBubble("Something went wrong while processing your request. Please try again.", "assistant");
         } else {
-          const assistantBubble = addBubble(data.reply, "assistant", "", true);
+          // [LOGGING] Pass query and thread_id so feedback buttons can identify this response
+          const assistantBubble = addBubble(data.reply, "assistant", "", true, msg, data.thread_id);
 
           const offset = 300; // adjust this value if needed
           const bubbleTop = assistantBubble.offsetTop;
@@ -464,7 +513,7 @@
     }
 
     async function resetChat() {
-      await fetch("/reset", { method: "POST" });
+      await fetch("/reset", { method: "POST", headers: _authHeaders() });
       messagesDiv.innerHTML = "";
       addBubble("Hi! Describe your client’s situation, and I’ll help identify EisnerAmper’s relevant capabilities, experience, and solutions.", "assistant");
       input.focus();
