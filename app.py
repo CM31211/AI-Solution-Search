@@ -5,7 +5,7 @@ from azure.ai.projects import AIProjectClient
 from azure.identity import DefaultAzureCredential
 from azure.ai.agents.models import ListSortOrder
 from azure.storage.blob import BlobServiceClient
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 import time
 import json
@@ -46,17 +46,19 @@ def _load_json_from_blob(blob_name: str) -> dict:
 _LOGS_CONTAINER = os.environ.get("LOGS_BLOB_CONTAINER")
 
 
-def _save_conversation_log(thread_id: str, user: str, query: str, response: str) -> None:
+def _save_conversation_log(thread_id: str, user: str, query: str, response: str, message_timestamp: str) -> None:
     """
     [LOGGING] Appends one query/response exchange to the conversation JSON file for this thread.
     Blob path: logs/<MMDDYYYY>/<username>/<thread_id>.json
     - feedback field is absent initially; added later when user clicks like/dislike.
+    - message_timestamp is passed in from the chat route so client and log always use the same value.
     Creates the file if it doesn't exist; appends to it if it does.
     Runs silently — logs errors but never raises, so chat flow is never interrupted.
     """
     try:
-        now         = datetime.now(timezone.utc)
-        date_folder = now.strftime("%m%d%Y")                       # e.g. 03122026
+        # [LOGGING] Parse date folder from the passed-in timestamp (same value returned to client)
+        msg_dt      = datetime.fromisoformat(message_timestamp.replace("Z", "+00:00"))
+        date_folder = msg_dt.strftime("%m%d%Y")                    # e.g. 03122026
         # [LOGGING] Strip domain from email to get clean username for folder name
         # When running locally, Easy Auth is not present so user defaults to "Unknown"
         username    = user.split("@")[0] if "@" in user else user  # e.g. chandan.mishra or Unknown
@@ -79,7 +81,7 @@ def _save_conversation_log(thread_id: str, user: str, query: str, response: str)
 
         # Append this exchange — no feedback field yet, added only if user clicks like/dislike
         conversation["messages"].append({
-            "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "timestamp": message_timestamp,
             "query":     query,
             "response":  response
         })
@@ -437,6 +439,46 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/history", methods=["GET"])
+def history():
+    """[HISTORY] Returns all conversation logs for the currently logged-in user."""
+    ok, err = _check_teams_token()
+    if not ok:
+        return err
+    user = (
+        request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME") or
+        request.headers.get("X-MS-CLIENT-PRINCIPAL-ID") or
+        _UNAUTHENTICATED_USER
+    )
+    username = user.split("@")[0] if "@" in user else user
+    try:
+        container_client = _blob_service.get_container_client(_LOGS_CONTAINER)
+
+        # Build set of valid date folders for the last 30 days
+        valid_dates = {
+            (datetime.now(timezone.utc) - timedelta(days=i)).strftime("%m%d%Y")
+            for i in range(31)
+        }
+
+        conversations = []
+        for blob in container_client.list_blobs():
+            # Blob path: MMDDYYYY/username/thread_id.json — only load blobs for this user within last 30 days
+            parts = blob.name.split("/")
+            if len(parts) == 3 and parts[1] == username and parts[0] in valid_dates:
+                try:
+                    blob_client = _blob_service.get_blob_client(container=_LOGS_CONTAINER, blob=blob.name)
+                    data = blob_client.download_blob().readall()
+                    conversations.append(json.loads(data.decode("utf-8")))
+                except Exception as e:
+                    print(f"[HISTORY] Failed to read blob {blob.name}: {e}")
+        # Sort newest date first
+        conversations.sort(key=lambda c: c.get("date", ""), reverse=True)
+        return jsonify({"conversations": conversations})
+    except Exception as e:
+        print(f"[HISTORY] Failed to list conversations: {e}")
+        return jsonify({"conversations": []})
+
+
 @app.route("/reset", methods=["POST"])
 def reset():
     ok, err = _check_teams_token()
@@ -507,10 +549,11 @@ def chat():
             service_line = classify_service_line(user_message)
             assistant_reply = append_contact_note(assistant_reply, service_line, SERVICE_LINE_CONTACTS)
 
-            # [LOGGING] Fire-and-forget background thread — logging never blocks or affects chat response
-            threading.Thread(target=_save_conversation_log, args=(thread_id, logged_in_user, user_message, assistant_reply), daemon=True).start()
+            # [LOGGING] Compute timestamp here so both the log and the client use the exact same value
+            message_timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            threading.Thread(target=_save_conversation_log, args=(thread_id, logged_in_user, user_message, assistant_reply, message_timestamp), daemon=True).start()
 
-            return jsonify({"reply": assistant_reply, "thread_id": thread_id}), 200
+            return jsonify({"reply": assistant_reply, "thread_id": thread_id, "message_timestamp": message_timestamp}), 200
 
         except ConnectionResetError as e:
             print(f"Connection reset on attempt {attempt}/{max_retries}: {e}")
