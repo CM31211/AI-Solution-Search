@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <title>AI Solution Search</title>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://res.cdn.office.net/teams-js/2.22.0/js/MicrosoftTeams.min.js"></script>
   <style>
     body { font-family: Arial, sans-serif; margin: 0; background: #f5f5f5; }
 
@@ -241,6 +242,75 @@
       border-left: 4px solid #0b5cff;
       padding-left: 8px;
     }
+
+    /* [HISTORY] History panel — replaces messages area when viewing past conversations */
+    .history-panel {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      background: #fafafa;
+      display: none;
+      flex-direction: column;
+    }
+
+    .history-date-header {
+      font-weight: 700;
+      font-size: 12px;
+      color: #666;
+      margin: 14px 0 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .history-conversation {
+      background: white;
+      border-radius: 10px;
+      border: 1px solid #e0e0e0;
+      margin-bottom: 10px;
+    }
+
+    .history-conv-header {
+      padding: 10px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: #111;
+    }
+
+    .history-conv-header:hover { background: #f5f5f5; }
+
+    .history-messages {
+      display: none;
+      padding: 8px 12px 12px;
+      border-top: 1px solid #eee;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .history-message { margin: 8px 0; font-size: 13px; }
+
+    .history-query {
+      background: #d9ecff;
+      padding: 7px 10px;
+      border-radius: 8px;
+      margin-bottom: 4px;
+      color: #111;
+    }
+
+    .history-response {
+      background: #e9e9e9;
+      padding: 7px 10px;
+      border-radius: 8px;
+      color: #111;
+      line-height: 1.4;
+    }
+
+    /* [HISTORY] Green left border = liked, red left border = disliked */
+    .history-feedback-like    { border-left: 3px solid #22c55e; }
+    .history-feedback-dislike { border-left: 3px solid #ef4444; }
   </style>
 </head>
 
@@ -262,6 +332,7 @@
 
       <div class="header-actions">
         <button class="header-btn" onclick="resetChat()">New chat</button>
+        <button class="header-btn" id="historyBtn" onclick="toggleHistory()">History</button>
         <button class="close-btn" onclick="toggleChat(false)" title="Close">×</button>
       </div>
     </div>
@@ -282,6 +353,9 @@
     </div>
 
     <div id="messages" class="messages"></div>
+
+    <!-- [HISTORY] History panel — shown in place of messages when user clicks History -->
+    <div id="historyPanel" class="history-panel"></div>
 
     <div class="input-area">
       <input id="input" type="text" placeholder="Type your message..." />
@@ -311,7 +385,7 @@
 
     chatLauncher.addEventListener("click", () => toggleChat());
 
-    function addBubble(text, who, extraClass = "", allowFeedback = false) {
+    function addBubble(text, who, extraClass = "", allowFeedback = false, query = "", threadId = "", serverTimestamp = "") {
       const bubble = document.createElement("div");
       bubble.className = `bubble ${who} ${extraClass}`;
 
@@ -341,6 +415,9 @@
         bubble.innerHTML = formattedText;
 
         if (allowFeedback) {
+          // [LOGGING] Use server timestamp so feedback always matches the stored log exactly
+          const messageTimestamp = serverTimestamp || new Date().toISOString();
+
           const feedbackDiv = document.createElement("div");
           feedbackDiv.style.marginTop = "8px";
           feedbackDiv.style.fontSize = "16px";
@@ -374,12 +451,12 @@
           }
 
           thumbsUp.onclick = () => {
-            sendFeedback("up", text);
+            sendFeedback("like", text, threadId, messageTimestamp, query);
             disableFeedback(thumbsUp, thumbsDown);
           };
 
           thumbsDown.onclick = () => {
-            sendFeedback("down", text);
+            sendFeedback("dislike", text, threadId, messageTimestamp, query);
             disableFeedback(thumbsDown, thumbsUp);
           };
 
@@ -395,13 +472,46 @@
       return bubble;
     }
 
-    async function sendFeedback(type, responseText) {
+    // ---- Teams Silent SSO ----
+    let _teamsToken = null;
+
+    async function _getTeamsToken() {
+      return new Promise((resolve) => {
+        microsoftTeams.authentication.getAuthToken({
+          successCallback: (token) => { _teamsToken = token; resolve(token); },
+          failureCallback: ()      => resolve(null)
+        });
+      });
+    }
+
+    (async function initTeams() {
+      try {
+        await microsoftTeams.app.initialize();
+        // Running inside Teams — acquire token silently
+        await _getTeamsToken();
+      } catch {
+        // Not in Teams context — browser path, Easy Auth handles authentication
+        _teamsToken = null;
+      }
+    })();
+
+    function _authHeaders() {
+      const h = { "Content-Type": "application/json" };
+      if (_teamsToken) h["Authorization"] = "Bearer " + _teamsToken;
+      return h;
+    }
+    // ---- End Teams Silent SSO ----
+
+    // [LOGGING] Send feedback — backend embeds it directly into the conversation log
+    async function sendFeedback(type, responseText, threadId, messageTimestamp, query) {
       await fetch("/feedback", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: _authHeaders(),
         body: JSON.stringify({
-          feedback: type,
-          response: responseText
+          feedback:           type,                       // "like" or "dislike"
+          thread_id:          threadId,                   // locates the conversation log blob
+          message_timestamp:  messageTimestamp,           // identifies the exact response within the conversation
+          feedback_timestamp: new Date().toISOString()    // when user clicked
         })
       });
     }
@@ -415,13 +525,29 @@
 
       const thinkingBubble = addBubble("Thinking...", "assistant", "thinking");
       
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120000);
+
       try
       {
-        const res = await fetch("/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: msg })
+        let res = await fetch("/chat", {
+          method: "POST",
+          headers: _authHeaders(),
+          body: JSON.stringify({ message: msg }),
+          signal: controller.signal
         });
+        clearTimeout(timeoutId);
+
+        // Token expired — refresh silently and retry once
+        if (res.status === 401 && _teamsToken) {
+          await _getTeamsToken();
+          res = await fetch("/chat", {
+            method: "POST",
+            headers: _authHeaders(),
+            body: JSON.stringify({ message: msg }),
+            signal: controller.signal
+          });
+        }
 
         const contentType = res.headers.get("content-type") || "";
         let data;
@@ -433,13 +559,14 @@
           console.error("Non-JSON response from /chat:", text);
           throw new Error("Server returned non-JSON response. Check server logs.");
         }
-        
+
         thinkingBubble.remove();
 
         if (!res.ok || data.error) {
           addBubble("Something went wrong while processing your request. Please try again.", "assistant");
         } else {
-          const assistantBubble = addBubble(data.reply, "assistant", "", true);
+          // [LOGGING] Pass query, thread_id and server timestamp so feedback always matches the log exactly
+          const assistantBubble = addBubble(data.reply, "assistant", "", true, msg, data.thread_id, data.message_timestamp);
 
           const offset = 300; // adjust this value if needed
           const bubbleTop = assistantBubble.offsetTop;
@@ -459,11 +586,133 @@
     }
 
     async function resetChat() {
-      await fetch("/reset", { method: "POST" });
+      await fetch("/reset", { method: "POST", headers: _authHeaders() });
       messagesDiv.innerHTML = "";
       addBubble("Hi! Describe your client’s situation, and I’ll help identify EisnerAmper’s relevant capabilities, experience, and solutions.", "assistant");
       input.focus();
     }
+
+    // [HISTORY] Toggle between chat view and history view
+    let _historyVisible = false;
+
+    function toggleHistory() {
+      _historyVisible ? showChat() : loadHistory();
+    }
+
+    function showChat() {
+      _historyVisible = false;
+      document.getElementById("messages").style.display = "";
+      document.getElementById("historyPanel").style.display = "none";
+      document.querySelector(".input-area").style.display = "";
+      document.getElementById("historyBtn").textContent = "History";
+    }
+
+    async function loadHistory() {
+      _historyVisible = true;
+      document.getElementById("messages").style.display = "none";
+      document.querySelector(".input-area").style.display = "none";
+      document.getElementById("historyBtn").textContent = "← Chat";
+
+      const panel = document.getElementById("historyPanel");
+      panel.style.display = "flex";
+      panel.innerHTML = '<div style="text-align:center;color:#888;font-size:13px;margin-top:20px;">Loading...</div>';
+
+      try {
+        const res = await fetch("/history", { headers: _authHeaders() });
+        if (!res.ok) {
+          panel.innerHTML = '<div style="text-align:center;color:#c0392b;font-size:13px;margin-top:20px;">Unable to load your history. Please try again later.</div>';
+          return;
+        }
+        const data = await res.json();
+        renderHistory(data.conversations || []);
+      } catch (e) {
+        panel.innerHTML = '<div style="text-align:center;color:#c0392b;font-size:13px;margin-top:20px;">Something went wrong while loading your history. Please try again later.</div>';
+      }
+    }
+
+    function formatHistoryDate(mmddyyyy) {
+      const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+      const mm = parseInt(mmddyyyy.substring(0, 2)) - 1;
+      const dd = parseInt(mmddyyyy.substring(2, 4));
+      const yyyy = mmddyyyy.substring(4, 8);
+      return `${months[mm]} ${dd}, ${yyyy}`;
+    }
+
+    function formatHistoryTime(isoTs) {
+      if (!isoTs) return "";
+      return new Date(isoTs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+
+    function escapeHtml(text) {
+      return (text || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    }
+
+    function toggleConv(id) {
+      const el = document.getElementById(id);
+      el.style.display = el.style.display === "block" ? "none" : "block";
+    }
+
+    function renderHistory(conversations) {
+      const panel = document.getElementById("historyPanel");
+
+      if (!conversations.length) {
+        panel.innerHTML = '<div style="text-align:center;color:#888;font-size:13px;margin-top:20px;">No conversations found in the last 30 days. Start a chat to see your history here.</div>';
+        return;
+      }
+
+      // Group by date
+      const byDate = {};
+      conversations.forEach(conv => {
+        const d = conv.date || "unknown";
+        if (!byDate[d]) byDate[d] = [];
+        byDate[d].push(conv);
+      });
+
+      let html = '<div style="font-weight:700;font-size:15px;margin-bottom:8px;">My Conversations</div>';
+
+      Object.keys(byDate).sort().reverse().forEach(date => {
+        html += `<div class="history-date-header">${date !== "unknown" ? formatHistoryDate(date) : "Unknown date"}</div>`;
+
+        byDate[date].forEach((conv, idx) => {
+          const firstMsg = conv.messages && conv.messages[0];
+          const preview = firstMsg
+            ? firstMsg.query.substring(0, 60) + (firstMsg.query.length > 60 ? "..." : "")
+            : "Empty conversation";
+          const count = (conv.messages || []).length;
+          const convId = `conv_${date}_${idx}`;
+
+          html += `<div class="history-conversation">
+            <div class="history-conv-header" onclick="toggleConv('${convId}')">
+              <span>${escapeHtml(preview)}</span>
+              <span style="font-size:11px;color:#888;">${count} exchange(s) ▾</span>
+            </div>
+            <div id="${convId}" class="history-messages">`;
+
+          (conv.messages || []).forEach(msg => {
+            const feedbackClass = msg.feedback === "like"
+              ? "history-feedback-like"
+              : msg.feedback === "dislike" ? "history-feedback-dislike" : "";
+            const feedbackIcon = msg.feedback === "like" ? " 👍" : msg.feedback === "dislike" ? " 👎" : "";
+            const time = formatHistoryTime(msg.timestamp);
+            const renderedResponse = marked.parse(msg.response || "");
+
+            html += `<div class="history-message">
+              <div class="history-query">${escapeHtml(msg.query)}</div>
+              <div class="history-response ${feedbackClass}">
+                ${time ? `<span style="float:right;color:#999;font-size:11px;">${time}</span>` : ""}
+                ${feedbackIcon ? `<span style="font-size:14px;">${feedbackIcon}</span>` : ""}
+                ${renderedResponse}
+              </div>
+            </div>`;
+          });
+
+          html += `</div></div>`;
+        });
+      });
+
+      panel.innerHTML = html;
+    }
+    // [HISTORY] End history functions
 
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") sendMessage();

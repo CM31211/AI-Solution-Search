@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(antenv/Scripts/pip install -r requirements.txt)"
+    ]
+  }
+}

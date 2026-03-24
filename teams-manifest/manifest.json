@@ -1,0 +1,43 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.0.0",
+  "id": "<YOUR-TEAMS-APP-GUID>",
+  "packageName": "com.eisneramper.aisolutionsearch",
+  "developer": {
+    "name": "EisnerAmper",
+    "websiteUrl": "https://<YOUR-WEBAPP-FQDN>",
+    "privacyUrl": "https://<YOUR-WEBAPP-FQDN>",
+    "termsOfUseUrl": "https://<YOUR-WEBAPP-FQDN>"
+  },
+  "name": {
+    "short": "AI Solution Search",
+    "full": "EisnerAmper AI Solution Search"
+  },
+  "description": {
+    "short": "AI-powered capability discovery",
+    "full": "Identify EisnerAmper capabilities, SMEs, and past experience for client scenarios."
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "accentColor": "#111111",
+  "staticTabs": [
+    {
+      "entityId": "aisolutionsearch",
+      "name": "AI Solution Search",
+      "contentUrl": "https://<YOUR-WEBAPP-FQDN>/",
+      "websiteUrl": "https://<YOUR-WEBAPP-FQDN>/",
+      "scopes": ["personal", "team", "groupchat"]
+    }
+  ],
+  "validDomains": [
+    "<YOUR-WEBAPP-FQDN>"
+  ],
+  "webApplicationInfo": {
+    "id": "<YOUR-AAD-CLIENT-ID>",
+    "resource": "api://<YOUR-WEBAPP-FQDN>/<YOUR-AAD-CLIENT-ID>"
+  },
+  "permissions": ["identity", "messageTeamMembers"]
+}
