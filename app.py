@@ -439,6 +439,21 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/me", methods=["GET"])
+def me():
+    """Returns the display name of the currently logged-in user."""
+    logged_in_user = (
+        request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME") or
+        request.headers.get("X-MS-CLIENT-PRINCIPAL-ID") or
+        _UNAUTHENTICATED_USER
+    )
+    # Strip domain (e.g. chandan.mishra@eisneramper.com → chandan.mishra)
+    local_part = logged_in_user.split("@")[0] if "@" in logged_in_user else logged_in_user
+    # Convert chandan.mishra → Chandan Mishra
+    display_name = " ".join(p.capitalize() for p in local_part.split("."))
+    return jsonify({"display_name": display_name})
+
+
 @app.route("/history", methods=["GET"])
 def history():
     """[HISTORY] Returns all conversation logs for the currently logged-in user."""

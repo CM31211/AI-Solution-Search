@@ -6,393 +6,590 @@
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://res.cdn.office.net/teams-js/2.22.0/js/MicrosoftTeams.min.js"></script>
   <style>
-    body { font-family: Arial, sans-serif; margin: 0; background: #f5f5f5; }
+    *, *::before, *::after { box-sizing: border-box; }
 
-    :root {
-      --ea-black: #111111;
-      --ea-gold: #c9a24d;   /* soft professional gold */
-      --ea-blue: #0b5cff;   /* existing send button blue */
-      --ea-gray-bg: #fafafa;
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      height: 100vh;
+      overflow: hidden;
+      font-size: 17px;
     }
 
-    /* Floating launcher button */
-    .chat-launcher {
-      position: fixed;
-      right: 20px;
-      bottom: 20px;
-      width: 56px;
-      height: 56px;
-      border-radius: 50%;
-      background: #111;
-      color: white;
-      border: 2px solid var(--ea-gold);
-      cursor: pointer;
-      font-size: 22px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+    :root {
+      --ea-gold: #c9a24d;
+      --ea-blue: #0b5cff;
+      --sidebar-bg: #1a1a1a;
+    }
+
+    /* ===== LAYOUT ===== */
+    .app-layout {
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ===== LEFT SIDEBAR ===== */
+    .sidebar {
+      width: 15%;
+      min-width: 44px;
+      background: #111111;
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid #2a2a2a;
+      flex-shrink: 0;
+      transition: width 0.25s ease;
+      overflow: hidden;
+    }
+
+    .sidebar.collapsed { width: 44px; }
+
+    /* Icon-only New Chat — hidden when expanded */
+    .new-chat-icon-btn {
+      display: none;
+    }
+
+    /* Show icon-only New Chat when collapsed */
+    .sidebar.collapsed .new-chat-icon-btn {
       display: flex;
       align-items: center;
       justify-content: center;
-      z-index: 9999;
+      width: 30px;
+      height: 30px;
+      margin: 10px auto;
+      background: #ffffff;
+      color: #111;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 18px;
+      transition: background 0.15s;
     }
 
-    .chat-launcher:hover {
-      box-shadow: 0 0 0 2px rgba(201,162,77,0.6),
-              0 10px 28px rgba(0,0,0,0.35);
+    .sidebar.collapsed .new-chat-icon-btn:hover { background: #e8e8e8; }
+
+    /* Hide all sidebar content except logo+toggle when collapsed */
+    .sidebar.collapsed .new-chat-btn,
+    .sidebar.collapsed .sidebar-divider,
+    .sidebar.collapsed .history-header,
+    .sidebar.collapsed .sidebar-history,
+    .sidebar.collapsed .sidebar-title-area {
+      display: none;
     }
 
-    /* Chat widget container */
-    .chat-widget {
-      position: fixed;
-      right: 20px;
-      bottom: 90px;
-      width: 40%;
-      height: 85%;
-      background: white;
-      border-radius: 14px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+    /* Keep wrapper so flex:1 still pushes text area to bottom */
+    .sidebar.collapsed .sidebar-history-wrapper { flex: 1; }
+
+    /* Collapsed: hide toggle, show only logo */
+    .sidebar.collapsed .toggle-btn { display: none; }
+
+    /* Collapsed hover: swap logo for toggle button */
+    .sidebar.collapsed .sidebar-top:hover .sidebar-logo { display: none; }
+    .sidebar.collapsed .sidebar-top:hover .toggle-btn {
+      display: block;
+      font-size: 22px;
+    }
+
+    /* Sidebar toggle button */
+
+    .toggle-btn {
+      background: none;
+      border: none;
+      color: #888;
+      cursor: pointer;
+      font-size: 18px;
+      padding: 4px 6px;
+      border-radius: 6px;
+      line-height: 1;
+      transition: color 0.15s, background 0.15s, transform 0.25s ease;
+    }
+
+    .toggle-btn:hover { color: #fff; background: #222; }
+
+    /* Logo pinned to bottom — height matches input-area (14+50+14=78px) */
+    /* Logo + toggle at top */
+    .sidebar-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #2a2a2a;
+      background: #0d0d0d;
+      flex-shrink: 0;
       overflow: hidden;
-      display: none; /* hidden by default */
+      height: 78px;
+      padding: 0 10px 0 0;
+    }
+
+    /* Text at bottom */
+    .sidebar-title-area {
+      display: flex;
       flex-direction: column;
-      z-index: 9999;
+      align-items: flex-start;
+      justify-content: center;
+      width: 100%;
+      padding: 20px 14px;
+      border-top: 1px solid #2a2a2a;
+      background: #0d0d0d;
+      flex-shrink: 0;
+      text-align: left;
+    }
+
+    .sidebar-logo-text {
+      color: #f0f0f0;
+      font-weight: 700;
+      font-size: 16px;
+      line-height: 1.3;
+      word-break: break-word;
+    }
+
+    .sidebar-logo-sub {
+      color: var(--ea-gold);
+      font-size: 14px;
+      font-weight: 600;
+      margin-top: 4px;
+      letter-spacing: 0.3px;
+    }
+
+    /* Logo image inside sidebar-top */
+    .sidebar-logo {
+      flex: 1;
+      height: 100%;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+    }
+
+    .sidebar-logo img { width: 100%; height: 100%; object-fit: contain; display: block; }
+
+    /* New Chat button */
+    .new-chat-btn {
+      margin: 14px 12px 10px;
+      padding: 10px 14px;
+      background: #ffffff;
+      color: #111111;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 15px;
+      font-weight: 700;
+      text-align: center;
+      letter-spacing: 0.2px;
+      transition: background 0.15s, transform 0.1s;
+    }
+
+    .new-chat-btn:hover {
+      background: #e8e8e8;
+      transform: translateY(-1px);
+    }
+
+    .new-chat-btn:active { transform: translateY(0); }
+
+    /* Divider below New Chat */
+    .sidebar-divider {
+      height: 1px;
+      background: #222;
+      margin: 0 12px 4px;
+    }
+
+    .sidebar-history-wrapper {
+      flex: 1;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .sidebar-history {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0 8px 12px;
+    }
+
+    .sidebar-history::-webkit-scrollbar { width: 3px; }
+    .sidebar-history::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+
+    .sidebar-date-label {
+      font-size: 13px;
+      color: #c0c0c0;
+      padding: 12px 8px 4px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.7px;
+    }
+
+    .sidebar-conv-item {
+      padding: 8px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      color: #ddd;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 1px;
+      border-left: 2px solid transparent;
+      transition: background 0.12s, color 0.12s, border-color 0.12s;
+    }
+
+    .sidebar-conv-item:hover {
+      background: #1e1e1e;
+      color: #fff;
+      border-left-color: #555;
+    }
+
+    .sidebar-conv-item.active {
+      background: #1c1c1c;
+      color: var(--ea-gold);
+      border-left-color: var(--ea-gold);
+      font-weight: 600;
+    }
+
+    .sidebar-status {
+      padding: 20px 16px;
+      font-size: 14px;
+      color: #777;
+      text-align: center;
+    }
+
+    /* Recents collapsible header */
+    .history-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px 6px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .history-label {
+      font-size: 13px;
+      font-weight: 700;
+      color: #c0c0c0;
+      text-transform: uppercase;
+      letter-spacing: 0.7px;
+    }
+
+    .history-arrow {
+      font-size: 12px;
+      color: #777;
+      transition: transform 0.2s ease;
+    }
+
+    .history-arrow.collapsed { transform: rotate(-90deg); }
+
+    /* ===== RIGHT MAIN PANEL ===== */
+    .main-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: white;
     }
 
     .chat-header {
       background: #111;
-      color: #111111;
-      padding: 12px;
+      padding: 12px 20px;
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      border-bottom: 1px solid rgba(201,162,77,0.25); /* subtle gold accent */
+      border-bottom: 1px solid rgba(201,162,77,0.25);
+      flex-shrink: 0;
     }
 
     .chat-title {
       font-weight: 600;
-      font-size: 18px;
-      line-height: 1.2;
+      font-size: 19px;
       color: #f5f5f5;
     }
 
     .chat-subtitle {
-      font-size: 12px;
-      color: #cfcfcf;
+      font-size: 13px;
+      color: #aaa;
       margin-top: 2px;
     }
 
-    .header-actions {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .header-btn {
-      background: #f3f3f3;
-      color: #111111;
-      border: 1px solid #dddddd;
-      padding: 7px 10px;
-      border-radius: 10px;
-      cursor: pointer;
-      font-size: 12px;
-    }
-
-    .close-btn {
-      background: #f3f3f3;
-      color: #111111;
-      border: 1px solid #dddddd;
-      width: 32px;
-      height: 32px;
-      border-radius: 10px;
-      cursor: pointer;
-      font-size: 18px;
-    }
-
-    /* ✅ Governance panel (static info panel) */
+    /* Governance panel */
     .governance-panel {
       background: #f4f6f8;
       border-left: 4px solid var(--ea-blue);
-      padding: 10px 12px;
-      font-size: 12px;
+      padding: 8px 16px;
+      font-size: 14px;
       color: #111;
       line-height: 1.35;
+      flex-shrink: 0;
     }
 
-    .governance-title {
-      font-weight: 800;
-      margin-bottom: 6px;
+    .governance-title { font-weight: 800; margin-bottom: 4px; }
+    .governance-panel ul { margin: 4px 0 0 18px; padding: 0; }
+    .governance-panel li { margin-bottom: 3px; }
+    .governance-panel a { color: var(--ea-gold); text-decoration: underline; font-weight: 600; }
+
+    /* Read-only banner */
+    .readonly-banner {
+      background: #fff8e6;
+      border-bottom: 1px solid #f0d080;
+      padding: 7px 20px;
+      font-size: 14px;
+      color: #7a5c00;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
     }
 
-    .governance-panel ul {
-      margin: 6px 0 0 18px;
-      padding: 0;
+    .readonly-banner button {
+      background: none;
+      border: 1px solid #c9a24d;
+      color: #7a5c00;
+      border-radius: 6px;
+      padding: 3px 10px;
+      font-size: 14px;
+      cursor: pointer;
     }
 
-    .governance-panel li {
-      margin-bottom: 4px;
-    }
+    .readonly-banner button:hover { background: rgba(201,162,77,0.1); }
 
-    .governance-panel a {
-      color: var(--ea-gold);
-      text-decoration: underline;
-      font-weight: 600;
-    }
-
+    /* Messages */
     .messages {
       flex: 1;
       overflow-y: auto;
-      padding: 12px;
+      padding: 20px 28px;
       background: #fafafa;
     }
 
     .bubble {
-      padding: 10px 12px;
+      padding: 10px 14px;
       border-radius: 12px;
       margin: 8px 0;
-      max-width: 85%;
+      max-width: 78%;
       white-space: pre-wrap;
-      font-size: 15px;
-      line-height: 1.35;
+      font-size: 17px;
+      line-height: 1.45;
     }
 
     .user { background: #d9ecff; margin-left: auto; }
     .assistant { background: #e9e9e9; margin-right: auto; }
 
-    .input-area {
-      display: flex;
-      gap: 10px;
-      padding: 10px;
-      border-top: 1px solid #ddd;
-      background: white;
-    }
-
-    input {
-      flex: 1;
-      padding: 10px;
-      border-radius: 10px;
-      border: 1px solid #ccc;
-      outline: none;
-      font-size: 13px;
-    }
-
-    .send {
-      background: #0b5cff;
-      color: white;
-      border: none;
-      padding: 10px 12px;
-      border-radius: 10px;
-      cursor: pointer;
-      font-size: 13px;
-    }
-
-    .thinking { opacity: 0.85; font-style: italic; }
-
     .bubble.assistant p { margin: 6px 0; }
-
-    .bubble.assistant h1,
-    .bubble.assistant h2,
-    .bubble.assistant h3,
-    .bubble.assistant h4 {
-      font-weight: 800;
-      margin: 10px 0 6px;
-    }
-
-    .bubble.assistant ul,
-    .bubble.assistant ol {
-      margin: 4px 0 6px 18px;
-      padding: 0;
-    }
-
+    .bubble.assistant h1, .bubble.assistant h2,
+    .bubble.assistant h3, .bubble.assistant h4 { font-weight: 800; margin: 10px 0 6px; }
+    .bubble.assistant ul, .bubble.assistant ol { margin: 4px 0 6px 18px; padding: 0; }
     .bubble.assistant li { margin-bottom: 3px; }
-
     .bubble.assistant br { line-height: 1; }
-
-    .bubble.assistant a {
-      color: var(--ea-gold);
-      font-weight: 500;
-      text-decoration: underline;
-    }
-
+    .bubble.assistant a { color: var(--ea-gold); font-weight: 500; text-decoration: underline; }
     .bubble.assistant strong { font-weight: 800; }
-
     .bubble span { transition: all 0.2s ease; }
-
-    .chat-icon {
-      width: 45px;
-      height: 22px;
-      display: block;
-      fill: none;
-      color: inherit;
-    }
-
-    .chat-icon-header {
-      width: 81px;
-      height: 18px;
-      margin-right: 8px;
-      display: block;
-      fill: none;
-      color: inherit;
-    }
+    .thinking { opacity: 0.85; font-style: italic; }
 
     .section-title {
       font-weight: 800;
-      font-size: 15px;
+      font-size: 17px;
       margin-top: 14px;
       margin-bottom: 6px;
       color: #111;
-      border-left: 4px solid #0b5cff;
+      border-left: 4px solid var(--ea-blue);
       padding-left: 8px;
     }
 
-    /* [HISTORY] History panel — replaces messages area when viewing past conversations */
-    .history-panel {
-      flex: 1;
-      overflow-y: auto;
-      padding: 12px;
-      background: #fafafa;
-      display: none;
-      flex-direction: column;
-    }
-
-    .history-date-header {
-      font-weight: 700;
-      font-size: 12px;
-      color: #666;
-      margin: 14px 0 6px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-
-    .history-conversation {
-      background: white;
-      border-radius: 10px;
-      border: 1px solid #e0e0e0;
-      margin-bottom: 10px;
-    }
-
-    .history-conv-header {
-      padding: 10px 12px;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      color: #111;
-    }
-
-    .history-conv-header:hover { background: #f5f5f5; }
-
-    .history-messages {
-      display: none;
-      padding: 8px 12px 12px;
-      border-top: 1px solid #eee;
-      max-height: 400px;
-      overflow-y: auto;
-    }
-
-    .history-message { margin: 8px 0; font-size: 13px; }
+    /* History read-only message styles */
+    .history-message { margin: 10px 0; }
 
     .history-query {
       background: #d9ecff;
-      padding: 7px 10px;
-      border-radius: 8px;
-      margin-bottom: 4px;
+      padding: 8px 12px;
+      border-radius: 10px;
+      margin-bottom: 6px;
       color: #111;
+      font-size: 16px;
+      max-width: 78%;
+      margin-left: auto;
     }
 
     .history-response {
       background: #e9e9e9;
-      padding: 7px 10px;
-      border-radius: 8px;
+      padding: 8px 12px;
+      border-radius: 10px;
       color: #111;
-      line-height: 1.4;
+      line-height: 1.45;
+      font-size: 16px;
+      max-width: 78%;
     }
 
-    /* [HISTORY] Green left border = liked, red left border = disliked */
+    .history-response p { margin: 5px 0; }
+    .history-response ul, .history-response ol { margin: 4px 0 4px 18px; padding: 0; }
+    .history-response strong { font-weight: 800; }
+    .history-response a { color: var(--ea-gold); text-decoration: underline; }
+
     .history-feedback-like    { border-left: 3px solid #22c55e; }
     .history-feedback-dislike { border-left: 3px solid #ef4444; }
+
+    /* Input area */
+    .input-area {
+      display: flex;
+      justify-content: center;
+      padding: 14px 28px;
+      background: white;
+      flex-shrink: 0;
+    }
+
+    .input-area-inner {
+      display: flex;
+      align-items: flex-end;
+      gap: 10px;
+      width: 100%;
+      max-width: 820px;
+    }
+
+    .input-area textarea {
+      flex: 1;
+      padding: 13px 18px;
+      border-radius: 12px;
+      border: 1px solid #ccc;
+      outline: none;
+      font-size: 17px;
+      font-family: inherit;
+      min-height: 50px;
+      max-height: 200px;
+      height: 50px;
+      resize: none;
+      overflow-y: hidden;
+      line-height: 1.5;
+    }
+
+    .input-area textarea:focus { border-color: var(--ea-blue); }
+
+    .send {
+      background: var(--ea-blue);
+      color: white;
+      border: none;
+      padding: 0 24px;
+      border-radius: 12px;
+      cursor: pointer;
+      font-size: 16px;
+      font-weight: 600;
+      height: 50px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .send:hover { background: #0048cc; }
   </style>
 </head>
 
 <body>
+  <div class="app-layout">
 
-  <!-- Floating chat launcher -->
-  <button class="chat-launcher" id="chatLauncher" title="Close chat">×</button>
+    <!-- ===== LEFT SIDEBAR ===== -->
+    <div class="sidebar" id="sidebar">
 
-  <!-- Chat widget -->
-  <div class="chat-widget" id="chatWidget">
-    <div class="chat-header">
-      <div style="display:flex; align-items:center;">
-        <img src="/static/agent-icon.svg" alt="AI Solution Search" class="chat-icon-header">
-        <div style="padding-left: 15px;">
-          <div class="chat-title">AI Solution Search</div>
-          <div class="chat-subtitle">Your Internal AI-Powered Capability Discovery Assistant.</div>
+      <!-- Logo + toggle at top -->
+      <div class="sidebar-top">
+        <div class="sidebar-logo">
+          <img src="/static/agent-icon.svg" alt="AI Solution Search">
+        </div>
+        <button class="toggle-btn" onclick="toggleSidebar()" id="toggleBtn" title="Collapse sidebar">&#9776;</button>
+      </div>
+
+      <button class="new-chat-btn" onclick="startNewChat()">＋  New Chat</button>
+      <button class="new-chat-icon-btn" onclick="startNewChat()" title="New Chat">&#9998;</button>
+      <div class="sidebar-divider"></div>
+
+      <div class="history-header" onclick="toggleHistory()">
+        <span class="history-label">History</span>
+        <span class="history-arrow" id="historyArrow">▼</span>
+      </div>
+
+      <div class="sidebar-history-wrapper">
+        <div class="sidebar-history" id="sidebarHistory">
+          <div class="sidebar-status">Loading history…</div>
         </div>
       </div>
 
-      <div class="header-actions">
-        <button class="header-btn" onclick="resetChat()">New chat</button>
-        <button class="header-btn" id="historyBtn" onclick="toggleHistory()">History</button>
-        <button class="close-btn" onclick="toggleChat(false)" title="Close">×</button>
+      <!-- User name at bottom -->
+      <div class="sidebar-title-area">
+        <div class="sidebar-logo-text" id="sidebarUserName">...</div>
+        <div class="sidebar-logo-sub">EisnerAmper</div>
+      </div>
+
+    </div>
+
+    <!-- ===== RIGHT MAIN PANEL ===== -->
+    <div class="main-panel">
+      <div class="chat-header">
+        <div>
+          <div class="chat-title">AI Solution Search</div>
+          <div class="chat-subtitle">Your Internal AI-Powered Capability Discovery Assistant</div>
+        </div>
+      </div>
+
+      <div class="governance-panel" id="governancePanel">
+        <div class="governance-title">Usage Guidance</div>
+        <ul>
+          <li><strong>Approved Use:</strong> Identifying EisnerAmper capabilities, service offerings, and SMEs based on a client scenario.</li>
+          <li><strong>Data Handling:</strong> Outputs may contain EisnerAmper Confidential Information. Do not forward externally.</li>
+          <li><strong>Who to contact if something looks wrong:</strong></li>
+          <ul>
+            <li>Tool issues: <strong>Mangesh Ramnathkar</strong> — <a href="mailto:mangesh.ramnathkar@eisneramper.com">mangesh.ramnathkar@eisneramper.com</a></li>
+            <li>Data exposure concerns: <strong>Dylan Stafford</strong> — <a href="mailto:dylan.stafford@eisneramper.com">dylan.stafford@eisneramper.com</a></li>
+            <li>Governance questions: <strong>Dave O'Brien</strong> — <a href="mailto:david.obrien@eisneramper.com">david.o'brien@eisneramper.com</a></li>
+          </ul>
+        </ul>
+      </div>
+
+      <!-- Shown only when viewing a past conversation -->
+      <div class="readonly-banner" id="readonlyBanner" style="display:none;">
+        Viewing past conversation — read only
+        <button onclick="startNewChat()">← Back to Chat</button>
+      </div>
+
+      <div id="messages" class="messages"></div>
+
+      <div class="input-area" id="inputArea">
+        <div class="input-area-inner">
+          <textarea id="input" placeholder="Describe your client's situation..." rows="1"></textarea>
+          <button class="send" onclick="sendMessage()">Send</button>
+        </div>
       </div>
     </div>
 
-    <!-- ✅ Governance Usage Guidance Panel (Option 1) -->
-    <div class="governance-panel" id="governancePanel">
-      <div class="governance-title">Usage Guidance</div>
-      <ul>
-        <li><strong>Approved Use:</strong> Identifying EisnerAmper capabilities, service offerings, and SMEs based on a client scenario.</li>
-        <li><strong>Data Handling:</strong> Outputs may contain EisnerAmper Confidential Information. Do not forward externally.</li>
-        <li><strong>Who to contact if something looks wrong:</strong></li>
-        <ul>
-          <li>Tool issues: <strong>Mangesh Ramnathkar</strong> — <a href="mailto:mangesh.ramnathkar@eisneramper.com">mangesh.ramnathkar@eisneramper.com</a></li>
-          <li>Data exposure concerns: <strong>Dylan Stafford</strong> — <a href="mailto:dylan.stafford@eisneramper.com">dylan.stafford@eisneramper.com</a></li>
-          <li>Governance questions: <strong>Dave O’Brien</strong> — <a href="mailto:david.obrien@eisneramper.com">david.o’brien@eisneramper.com</a></li>
-        </ul>
-      </ul>
-    </div>
-
-    <div id="messages" class="messages"></div>
-
-    <!-- [HISTORY] History panel — shown in place of messages when user clicks History -->
-    <div id="historyPanel" class="history-panel"></div>
-
-    <div class="input-area">
-      <input id="input" type="text" placeholder="Type your message..." />
-      <button class="send" onclick="sendMessage()">Send</button>
-    </div>
-  </div>
+  </div><!-- .app-layout -->
 
   <script>
-    const chatLauncher = document.getElementById("chatLauncher");
-    const chatWidget = document.getElementById("chatWidget");
     const messagesDiv = document.getElementById("messages");
-    const input = document.getElementById("input");
+    const input       = document.getElementById("input");
 
-    function toggleChat(forceOpen) {
-      const shouldOpen = (typeof forceOpen === "boolean")
-        ? forceOpen
-        : (chatWidget.style.display === "none" || chatWidget.style.display === "");
+    // ---- Teams Silent SSO ----
+    let _teamsToken = null;
 
-      chatWidget.style.display = shouldOpen ? "flex" : "none";
-      chatLauncher.innerHTML = shouldOpen
-        ? "×"
-        : '<img src="/static/agent-icon.svg" alt="AI Solution Search" class="chat-icon">';
-      chatLauncher.title = shouldOpen ? "Close chat" : "Open chat";
-
-      if (shouldOpen) setTimeout(() => input.focus(), 50);
+    async function _getTeamsToken() {
+      return new Promise((resolve) => {
+        microsoftTeams.authentication.getAuthToken({
+          successCallback: (token) => { _teamsToken = token; resolve(token); },
+          failureCallback: ()      => resolve(null)
+        });
+      });
     }
 
-    chatLauncher.addEventListener("click", () => toggleChat());
+    (async function initTeams() {
+      try {
+        await microsoftTeams.app.initialize();
+        await _getTeamsToken();
+      } catch {
+        _teamsToken = null;
+      }
+    })();
+
+    function _authHeaders() {
+      const h = { "Content-Type": "application/json" };
+      if (_teamsToken) h["Authorization"] = "Bearer " + _teamsToken;
+      return h;
+    }
+    // ---- End Teams Silent SSO ----
 
     function addBubble(text, who, extraClass = "", allowFeedback = false, query = "", threadId = "", serverTimestamp = "") {
       const bubble = document.createElement("div");
       bubble.className = `bubble ${who} ${extraClass}`;
 
       if (who === "assistant") {
-        // 1) First, convert known section titles in RAW text into HTML markers
         let raw = text;
-
         const sections = [
           "Summary of Client Problem:",
           "How EisnerAmper Can Help (Capabilities):",
@@ -410,43 +607,34 @@
           raw = raw.replace(regex, `\n<div class="section-title">${section}</div>\n`);
         });
 
-        // 2) Now parse markdown AFTER replacements
-        let formattedText = marked.parse(raw);
-        bubble.innerHTML = formattedText;
+        bubble.innerHTML = marked.parse(raw);
 
         if (allowFeedback) {
-          // [LOGGING] Use server timestamp so feedback always matches the stored log exactly
           const messageTimestamp = serverTimestamp || new Date().toISOString();
-
           const feedbackDiv = document.createElement("div");
           feedbackDiv.style.marginTop = "8px";
           feedbackDiv.style.fontSize = "16px";
           feedbackDiv.style.userSelect = "none";
 
-          const thumbsUp = document.createElement("span");
+          const thumbsUp   = document.createElement("span");
           const thumbsDown = document.createElement("span");
-
-          thumbsUp.innerHTML = "👍";
+          thumbsUp.innerHTML   = "👍";
           thumbsDown.innerHTML = "👎";
-
-          thumbsUp.style.cursor = "pointer";
-          thumbsDown.style.cursor = "pointer";
+          thumbsUp.style.cursor    = "pointer";
+          thumbsDown.style.cursor  = "pointer";
           thumbsUp.style.marginRight = "12px";
 
           function disableFeedback(selected, other) {
-            selected.style.color = "#0b5cff";
-            selected.style.fontWeight = "bold";
-            selected.style.opacity = "1";
-            selected.title = "Feedback recorded";
-
-            thumbsUp.onclick = null;
-            thumbsDown.onclick = null;
-
-            thumbsUp.style.cursor = "default";
-            thumbsDown.style.cursor = "default";
-
-            other.style.opacity = "0.4";
-            other.style.pointerEvents = "none";
+            selected.style.color       = "#0b5cff";
+            selected.style.fontWeight  = "bold";
+            selected.style.opacity     = "1";
+            selected.title             = "Feedback recorded";
+            thumbsUp.onclick           = null;
+            thumbsDown.onclick         = null;
+            thumbsUp.style.cursor      = "default";
+            thumbsDown.style.cursor    = "default";
+            other.style.opacity        = "0.4";
+            other.style.pointerEvents  = "none";
             selected.style.pointerEvents = "auto";
           }
 
@@ -454,7 +642,6 @@
             sendFeedback("like", text, threadId, messageTimestamp, query);
             disableFeedback(thumbsUp, thumbsDown);
           };
-
           thumbsDown.onclick = () => {
             sendFeedback("dislike", text, threadId, messageTimestamp, query);
             disableFeedback(thumbsDown, thumbsUp);
@@ -472,46 +659,16 @@
       return bubble;
     }
 
-    // ---- Teams Silent SSO ----
-    let _teamsToken = null;
-
-    async function _getTeamsToken() {
-      return new Promise((resolve) => {
-        microsoftTeams.authentication.getAuthToken({
-          successCallback: (token) => { _teamsToken = token; resolve(token); },
-          failureCallback: ()      => resolve(null)
-        });
-      });
-    }
-
-    (async function initTeams() {
-      try {
-        await microsoftTeams.app.initialize();
-        // Running inside Teams — acquire token silently
-        await _getTeamsToken();
-      } catch {
-        // Not in Teams context — browser path, Easy Auth handles authentication
-        _teamsToken = null;
-      }
-    })();
-
-    function _authHeaders() {
-      const h = { "Content-Type": "application/json" };
-      if (_teamsToken) h["Authorization"] = "Bearer " + _teamsToken;
-      return h;
-    }
-    // ---- End Teams Silent SSO ----
-
-    // [LOGGING] Send feedback — backend embeds it directly into the conversation log
+    // [LOGGING] Send feedback
     async function sendFeedback(type, responseText, threadId, messageTimestamp, query) {
       await fetch("/feedback", {
         method: "POST",
         headers: _authHeaders(),
         body: JSON.stringify({
-          feedback:           type,                       // "like" or "dislike"
-          thread_id:          threadId,                   // locates the conversation log blob
-          message_timestamp:  messageTimestamp,           // identifies the exact response within the conversation
-          feedback_timestamp: new Date().toISOString()    // when user clicked
+          feedback:           type,
+          thread_id:          threadId,
+          message_timestamp:  messageTimestamp,
+          feedback_timestamp: new Date().toISOString()
         })
       });
     }
@@ -520,16 +677,22 @@
       const msg = input.value.trim();
       if (!msg) return;
 
+      // If user types while in read-only view, start a fresh chat first
+      if (_viewingHistory) {
+        await fetch("/reset", { method: "POST", headers: _authHeaders() });
+        _setLiveMode();
+      }
+
       addBubble(msg, "user");
       input.value = "";
+      input.style.height = "50px";
+      input.style.overflowY = "hidden";
 
       const thinkingBubble = addBubble("Thinking...", "assistant", "thinking");
-      
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 120000);
+      const timeoutId  = setTimeout(() => controller.abort(), 120000);
 
-      try
-      {
+      try {
         let res = await fetch("/chat", {
           method: "POST",
           headers: _authHeaders(),
@@ -538,7 +701,6 @@
         });
         clearTimeout(timeoutId);
 
-        // Token expired — refresh silently and retry once
         if (res.status === 401 && _teamsToken) {
           await _getTeamsToken();
           res = await fetch("/chat", {
@@ -554,7 +716,6 @@
         if (contentType.includes("application/json")) {
           data = await res.json();
         } else {
-          // if it's HTML or plain text, read it and show short error
           const text = await res.text();
           console.error("Non-JSON response from /chat:", text);
           throw new Error("Server returned non-JSON response. Check server logs.");
@@ -567,73 +728,63 @@
         } else {
           // [LOGGING] Pass query, thread_id and server timestamp so feedback always matches the log exactly
           const assistantBubble = addBubble(data.reply, "assistant", "", true, msg, data.thread_id, data.message_timestamp);
-
-          const offset = 300; // adjust this value if needed
-          const bubbleTop = assistantBubble.offsetTop;
-          messagesDiv.scrollTo({
-            top: bubbleTop - offset,
-            behavior: "smooth"
-          });
+          const offset = 300;
+          messagesDiv.scrollTo({ top: assistantBubble.offsetTop - offset, behavior: "smooth" });
+          // Refresh sidebar so new conversation appears
+          loadSidebarHistory();
         }
-      } catch(err){
+      } catch (err) {
         thinkingBubble.remove();
         console.error("Chat request failed:", err);
         addBubble("Something went wrong while processing your request. Please try again.", "assistant");
       }
-
-
-      
     }
 
-    async function resetChat() {
+    async function startNewChat() {
       await fetch("/reset", { method: "POST", headers: _authHeaders() });
       messagesDiv.innerHTML = "";
-      addBubble("Hi! Describe your client’s situation, and I’ll help identify EisnerAmper’s relevant capabilities, experience, and solutions.", "assistant");
+      _setLiveMode();
+      addBubble("Hi! Describe your client's situation, and I'll help identify EisnerAmper's relevant capabilities, experience, and solutions.", "assistant");
       input.focus();
     }
 
-    // [HISTORY] Toggle between chat view and history view
-    let _historyVisible = false;
+    // ===== SIDEBAR COLLAPSE =====
+    let _sidebarOpen = true;
+
+    function toggleSidebar() {
+      _sidebarOpen = !_sidebarOpen;
+      const sidebar   = document.getElementById("sidebar");
+      const toggleBtn = document.getElementById("toggleBtn");
+      sidebar.classList.toggle("collapsed", !_sidebarOpen);
+      toggleBtn.title = _sidebarOpen ? "Collapse sidebar" : "Expand sidebar";
+    }
+
+    // ===== RECENTS TOGGLE =====
+    let _historyOpen = true;
 
     function toggleHistory() {
-      _historyVisible ? showChat() : loadHistory();
+      _historyOpen = !_historyOpen;
+      const history = document.getElementById("sidebarHistory");
+      const arrow   = document.getElementById("historyArrow");
+      history.style.display = _historyOpen ? "" : "none";
+      arrow.classList.toggle("collapsed", !_historyOpen);
     }
 
-    function showChat() {
-      _historyVisible = false;
-      document.getElementById("messages").style.display = "";
-      document.getElementById("historyPanel").style.display = "none";
-      document.querySelector(".input-area").style.display = "";
-      document.getElementById("historyBtn").textContent = "History";
-    }
+    // ===== SIDEBAR HISTORY =====
+    let _viewingHistory = false;
+    let _allConversations = [];  // flat array; indexed by position for onclick
 
-    async function loadHistory() {
-      _historyVisible = true;
-      document.getElementById("messages").style.display = "none";
-      document.querySelector(".input-area").style.display = "none";
-      document.getElementById("historyBtn").textContent = "← Chat";
-
-      const panel = document.getElementById("historyPanel");
-      panel.style.display = "flex";
-      panel.innerHTML = '<div style="text-align:center;color:#888;font-size:13px;margin-top:20px;">Loading...</div>';
-
-      try {
-        const res = await fetch("/history", { headers: _authHeaders() });
-        if (!res.ok) {
-          panel.innerHTML = '<div style="text-align:center;color:#c0392b;font-size:13px;margin-top:20px;">Unable to load your history. Please try again later.</div>';
-          return;
-        }
-        const data = await res.json();
-        renderHistory(data.conversations || []);
-      } catch (e) {
-        panel.innerHTML = '<div style="text-align:center;color:#c0392b;font-size:13px;margin-top:20px;">Something went wrong while loading your history. Please try again later.</div>';
-      }
+    function _setLiveMode() {
+      _viewingHistory = false;
+      document.getElementById("readonlyBanner").style.display = "none";
+      document.getElementById("inputArea").style.display = "";
+      document.querySelectorAll(".sidebar-conv-item.active").forEach(el => el.classList.remove("active"));
     }
 
     function formatHistoryDate(mmddyyyy) {
       const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-      const mm = parseInt(mmddyyyy.substring(0, 2)) - 1;
-      const dd = parseInt(mmddyyyy.substring(2, 4));
+      const mm   = parseInt(mmddyyyy.substring(0, 2)) - 1;
+      const dd   = parseInt(mmddyyyy.substring(2, 4));
       const yyyy = mmddyyyy.substring(4, 8);
       return `${months[mm]} ${dd}, ${yyyy}`;
     }
@@ -647,83 +798,123 @@
       return (text || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
     }
 
-    function toggleConv(id) {
-      const el = document.getElementById(id);
-      el.style.display = el.style.display === "block" ? "none" : "block";
+    async function loadSidebarHistory() {
+      const sidebar = document.getElementById("sidebarHistory");
+      try {
+        const res = await fetch("/history", { headers: _authHeaders() });
+        if (!res.ok) {
+          sidebar.innerHTML = '<div class="sidebar-status" style="color:#c0392b;">Could not load history</div>';
+          return;
+        }
+        const data = await res.json();
+        _allConversations = data.conversations || [];
+        renderSidebarHistory(_allConversations);
+      } catch (e) {
+        sidebar.innerHTML = '<div class="sidebar-status" style="color:#c0392b;">Could not load history</div>';
+      }
     }
 
-    function renderHistory(conversations) {
-      const panel = document.getElementById("historyPanel");
+    function renderSidebarHistory(conversations) {
+      const sidebar = document.getElementById("sidebarHistory");
 
       if (!conversations.length) {
-        panel.innerHTML = '<div style="text-align:center;color:#888;font-size:13px;margin-top:20px;">No conversations found in the last 30 days. Start a chat to see your history here.</div>';
+        sidebar.innerHTML = '<div class="sidebar-status">No past conversations</div>';
         return;
       }
 
-      // Group by date
+      // Group by date, preserving global index for onclick reference
       const byDate = {};
-      conversations.forEach(conv => {
+      conversations.forEach((conv, globalIdx) => {
         const d = conv.date || "unknown";
         if (!byDate[d]) byDate[d] = [];
-        byDate[d].push(conv);
+        byDate[d].push({ conv, globalIdx });
       });
 
-      let html = '<div style="font-weight:700;font-size:15px;margin-bottom:8px;">My Conversations</div>';
-
+      let html = "";
       Object.keys(byDate).sort().reverse().forEach(date => {
-        html += `<div class="history-date-header">${date !== "unknown" ? formatHistoryDate(date) : "Unknown date"}</div>`;
+        const dateLabel = date !== "unknown" ? formatHistoryDate(date) : "Unknown date";
+        html += `<div class="sidebar-date-label">${dateLabel}</div>`;
 
-        byDate[date].forEach((conv, idx) => {
+        byDate[date].forEach(({ conv, globalIdx }) => {
           const firstMsg = conv.messages && conv.messages[0];
-          const preview = firstMsg
-            ? firstMsg.query.substring(0, 60) + (firstMsg.query.length > 60 ? "..." : "")
+          const preview  = firstMsg
+            ? firstMsg.query.substring(0, 52) + (firstMsg.query.length > 52 ? "…" : "")
             : "Empty conversation";
-          const count = (conv.messages || []).length;
-          const convId = `conv_${date}_${idx}`;
-
-          html += `<div class="history-conversation">
-            <div class="history-conv-header" onclick="toggleConv('${convId}')">
-              <span>${escapeHtml(preview)}</span>
-              <span style="font-size:11px;color:#888;">${count} exchange(s) ▾</span>
-            </div>
-            <div id="${convId}" class="history-messages">`;
-
-          (conv.messages || []).forEach(msg => {
-            const feedbackClass = msg.feedback === "like"
-              ? "history-feedback-like"
-              : msg.feedback === "dislike" ? "history-feedback-dislike" : "";
-            const feedbackIcon = msg.feedback === "like" ? " 👍" : msg.feedback === "dislike" ? " 👎" : "";
-            const time = formatHistoryTime(msg.timestamp);
-            const renderedResponse = marked.parse(msg.response || "");
-
-            html += `<div class="history-message">
-              <div class="history-query">${escapeHtml(msg.query)}</div>
-              <div class="history-response ${feedbackClass}">
-                ${time ? `<span style="float:right;color:#999;font-size:11px;">${time}</span>` : ""}
-                ${feedbackIcon ? `<span style="font-size:14px;">${feedbackIcon}</span>` : ""}
-                ${renderedResponse}
-              </div>
-            </div>`;
-          });
-
-          html += `</div></div>`;
+          const title = escapeHtml(firstMsg ? firstMsg.query : "");
+          html += `<div class="sidebar-conv-item" title="${title}" onclick="viewConversation(this, ${globalIdx})">${escapeHtml(preview)}</div>`;
         });
       });
 
-      panel.innerHTML = html;
+      sidebar.innerHTML = html;
     }
-    // [HISTORY] End history functions
 
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") sendMessage();
+    function viewConversation(el, globalIdx) {
+      const conv = _allConversations[globalIdx];
+      if (!conv) return;
+
+      // Highlight selected item
+      document.querySelectorAll(".sidebar-conv-item.active").forEach(i => i.classList.remove("active"));
+      el.classList.add("active");
+
+      _viewingHistory = true;
+      document.getElementById("readonlyBanner").style.display = "flex";
+      document.getElementById("inputArea").style.display = "none";
+      messagesDiv.innerHTML = "";
+
+      (conv.messages || []).forEach(msg => {
+        const feedbackClass = msg.feedback === "like"
+          ? "history-feedback-like"
+          : msg.feedback === "dislike" ? "history-feedback-dislike" : "";
+        const feedbackIcon = msg.feedback === "like" ? "👍 " : msg.feedback === "dislike" ? "👎 " : "";
+        const time         = formatHistoryTime(msg.timestamp);
+
+        const msgEl = document.createElement("div");
+        msgEl.className = "history-message";
+        msgEl.innerHTML = `
+          <div class="history-query">${escapeHtml(msg.query)}</div>
+          <div class="history-response ${feedbackClass}">
+            ${time         ? `<span style="float:right;color:#999;font-size:11px;margin-left:8px;">${time}</span>` : ""}
+            ${feedbackIcon ? `<span style="font-size:14px;">${feedbackIcon}</span>` : ""}
+            ${marked.parse(msg.response || "")}
+          </div>`;
+        messagesDiv.appendChild(msgEl);
+      });
+
+      messagesDiv.scrollTop = 0;
+    }
+
+    // Auto-resize textarea as user types
+    input.addEventListener("input", () => {
+      input.style.height = "50px";
+      const newHeight = Math.min(input.scrollHeight, 200);
+      input.style.height = newHeight + "px";
+      input.style.overflowY = newHeight >= 200 ? "auto" : "hidden";
     });
 
-    addBubble(
-      "Hi! Describe your client’s situation, and I’ll help identify EisnerAmper’s relevant capabilities, experience, and solutions.",
-      "assistant"
-    );
+    // Enter = send, Shift+Enter = new line
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
 
-    chatWidget.style.display = "flex";
+    // Load logged-in user display name
+    async function loadCurrentUser() {
+      try {
+        const res = await fetch("/me", { headers: _authHeaders() });
+        if (res.ok) {
+          const data = await res.json();
+          document.getElementById("sidebarUserName").textContent = data.display_name || "Welcome";
+        }
+      } catch (e) { /* silent */ }
+    }
+
+    // Init
+    addBubble("Hi! Describe your client's situation, and I'll help identify EisnerAmper's relevant capabilities, experience, and solutions.", "assistant");
+    loadSidebarHistory();
+    loadCurrentUser();
+    input.focus();
   </script>
 </body>
 </html>
