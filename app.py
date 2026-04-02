@@ -167,14 +167,10 @@ def append_contact_note(reply_text: str, service_line: str, contact_map: dict) -
 
 @app.route("/feedback", methods=["POST"])
 def feedback():
+    user, err = _require_user()
+    if err:
+        return err
     data = request.json
-
-    # [LOGGING] Read user identity from Easy Auth header (same as chat route)
-    user = (
-        request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME") or
-        request.headers.get("X-MS-CLIENT-PRINCIPAL-ID") or
-        _UNAUTHENTICATED_USER
-    )
 
     # [LOGGING] Fire-and-forget background thread — never blocks response
     threading.Thread(target=_embed_feedback_in_conversation, args=(user, data), daemon=True).start()
@@ -283,19 +279,36 @@ def _validate_teams_token(token: str) -> bool:
         threading.Thread(target=_save_error_log, args=(e, _UNAUTHENTICATED_USER, "teams_token_validation"), daemon=True).start()
         return False
 
-def _check_teams_token() -> tuple:
+
+def _require_user() -> tuple:
     """
-    If an Authorization: Bearer header is present, validate it.
-    Returns (ok, error_response).
-    If no header: passes through — browser / Easy Auth path.
+    Returns (user, error_response) for all API routes.
+    Accepts either:
+      - Easy Auth headers (browser path) — X-MS-CLIENT-PRINCIPAL-NAME / ID
+      - Valid Teams Bearer token (Teams path)
+    Rejects requests that have neither — unauthenticated browser access blocked at API level.
     """
     auth_header = request.headers.get("Authorization", "")
-    if not auth_header:
-        return True, None   # no token — browser path, Easy Auth handles it
-    token = auth_header.removeprefix("Bearer ").strip()
-    if not _validate_teams_token(token):
-        return False, (jsonify({"error": "Unauthorized"}), 401)
-    return True, None
+    easy_auth_user = (
+        request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME") or
+        request.headers.get("X-MS-CLIENT-PRINCIPAL-ID")
+    )
+
+    if auth_header:
+        # Teams path — validate Bearer token
+        token = auth_header.removeprefix("Bearer ").strip()
+        if not _validate_teams_token(token):
+            return None, (jsonify({"error": "Unauthorized"}), 401)
+        # Token is valid — user identity comes from Easy Auth header if present,
+        # otherwise fall back to Unknown (Teams SSO doesn't inject Easy Auth headers)
+        return easy_auth_user or _UNAUTHENTICATED_USER, None
+
+    if easy_auth_user:
+        # Browser path — Easy Auth already authenticated the user
+        return easy_auth_user, None
+
+    # Neither — unauthenticated request, block it
+    return None, (jsonify({"error": "Unauthorized"}), 401)
 
 # ---- Azure AI Foundry setup (loaded from .env locally / App Settings on Azure) ----
 PROJECT_ENDPOINT = os.getenv("PROJECT_ENDPOINT")
@@ -494,14 +507,9 @@ def me():
 @app.route("/history", methods=["GET"])
 def history():
     """[HISTORY] Returns all conversation logs for the currently logged-in user."""
-    ok, err = _check_teams_token()
-    if not ok:
+    user, err = _require_user()
+    if err:
         return err
-    user = (
-        request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME") or
-        request.headers.get("X-MS-CLIENT-PRINCIPAL-ID") or
-        _UNAUTHENTICATED_USER
-    )
     username = user.split("@")[0] if "@" in user else user
     try:
         container_client = _blob_service.get_container_client(_LOGS_CONTAINER)
@@ -533,8 +541,8 @@ def history():
 
 @app.route("/reset", methods=["POST"])
 def reset():
-    ok, err = _check_teams_token()
-    if not ok:
+    _, err = _require_user()
+    if err:
         return err
     session.pop("thread_id", None)
     return jsonify({"ok": True})
@@ -542,20 +550,13 @@ def reset():
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    ok, err = _check_teams_token()
-    if not ok:
+    logged_in_user, err = _require_user()
+    if err:
         return err
     _startup_ready.wait()  # block until background startup finishes
     if _startup_error:
         print(f"Startup error prevented chat: {_startup_error}")
         return jsonify({"error": "Service is not ready. Please try again shortly."}), 503
-
-    # Azure Easy Auth injects the logged-in user's identity into every request header
-    logged_in_user = (
-        request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME") or
-        request.headers.get("X-MS-CLIENT-PRINCIPAL-ID") or
-        _UNAUTHENTICATED_USER
-    )
     print(f"User: {logged_in_user}")
 
     user_message = request.json.get("message", "").strip()
