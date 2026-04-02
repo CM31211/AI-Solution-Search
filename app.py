@@ -94,6 +94,35 @@ def _save_conversation_log(thread_id: str, user: str, query: str, response: str,
     except Exception as e:
         print(f"[LOGGING] Failed to save conversation log: {e}")
 
+
+def _save_error_log(error_msg: str, user: str, context: str = "") -> None:
+    """
+    [LOGGING] Saves error details to a dedicated errorlog subfolder in blob storage.
+    Blob path: logs/<MMDDYYYY>/errorlog/errorlog_{ddMMyyyyHHmmssffff}.json
+    - ffff = first 4 digits of microseconds (sub-second uniqueness)
+    - Runs silently — never raises, never interrupts any flow.
+    """
+    try:
+        if not _blob_service or not _LOGS_CONTAINER:
+            return
+        now = datetime.now(timezone.utc)
+        date_folder = now.strftime("%m%d%Y")
+        ffff = str(now.microsecond).zfill(6)[:4]
+        filename = f"errorlog_{now.strftime('%d%m%Y%H%M%S')}{ffff}.json"
+        blob_name = f"{date_folder}/errorlog/{filename}"
+        username = user.split("@")[0] if "@" in user else user
+        error_data = {
+            "timestamp": now.strftime("%Y-%m-%dT%H:%M:%S.") + ffff + "Z",
+            "user": username,
+            "context": context,
+            "error": str(error_msg)
+        }
+        blob_client = _blob_service.get_blob_client(container=_LOGS_CONTAINER, blob=blob_name)
+        blob_client.upload_blob(json.dumps(error_data, indent=2), overwrite=True)
+    except Exception:
+        pass  # Never let error logging interrupt anything
+
+
 # Load from environment variables
 SERVICE_LINE_CONTACTS = json.loads(os.environ.get("SERVICE_LINE_CONTACTS", "{}"))
 SERVICE_LINE_KEYWORDS = json.loads(os.environ.get("SERVICE_LINE_KEYWORDS", "{}"))
@@ -200,6 +229,7 @@ def _embed_feedback_in_conversation(user: str, data: dict) -> None:
 
     except Exception as e:
         print(f"[LOGGING] Failed to embed feedback: {e}")
+        _save_error_log(e, user, "feedback")
 
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-key-change-me")
 
@@ -222,12 +252,14 @@ def _get_jwks_client() -> PyJWKClient:
     return _jwks_client
 
 def _validate_teams_token(token: str) -> bool:
-    """Validate an AAD Bearer token issued by Teams SSO. Returns True if valid."""
+    """Validate an AAD Bearer token issued by Teams SSO. Returns True if valid.
+    Checks: signature, algorithm, audience, issuer, expiry, and access_as_user scope.
+    """
     if not AAD_TENANT_ID or not AAD_CLIENT_ID:
         return False
     try:
         signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
-        jwt.decode(
+        decoded = jwt.decode(
             token,
             signing_key.key,
             algorithms=["RS256"],
@@ -238,9 +270,17 @@ def _validate_teams_token(token: str) -> bool:
             ],
             options={"require": ["exp", "aud", "iss"]}
         )
+        # Enforce access_as_user scope — scp is a space-separated string
+        scp = decoded.get("scp", "")
+        if "access_as_user" not in scp.split():
+            msg = "Teams token rejected: 'access_as_user' scope missing"
+            print(msg)
+            threading.Thread(target=_save_error_log, args=(msg, _UNAUTHENTICATED_USER, "teams_token_scope"), daemon=True).start()
+            return False
         return True
     except Exception as e:
         print(f"Teams token validation failed: {e}")
+        threading.Thread(target=_save_error_log, args=(e, _UNAUTHENTICATED_USER, "teams_token_validation"), daemon=True).start()
         return False
 
 def _check_teams_token() -> tuple:
@@ -439,6 +479,18 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/me", methods=["GET"])
+def me():
+    logged_in_user = (
+        request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME") or
+        request.headers.get("X-MS-CLIENT-PRINCIPAL-ID") or
+        _UNAUTHENTICATED_USER
+    )
+    local_part = logged_in_user.split("@")[0] if "@" in logged_in_user else logged_in_user
+    display_name = " ".join(p.capitalize() for p in local_part.split("."))
+    return jsonify({"display_name": display_name})
+
+
 @app.route("/history", methods=["GET"])
 def history():
     """[HISTORY] Returns all conversation logs for the currently logged-in user."""
@@ -560,10 +612,12 @@ def chat():
             if attempt < max_retries:
                 time.sleep(2 ** attempt)  # 2s, 4s backoff
             else:
+                threading.Thread(target=_save_error_log, args=(e, logged_in_user, "chat_connection_reset"), daemon=True).start()
                 return jsonify({"error": "Something went wrong. Please try again."}), 500
 
         except Exception as e:
             print(f"Chat error: {e}")
+            threading.Thread(target=_save_error_log, args=(e, logged_in_user, "chat"), daemon=True).start()
             return jsonify({"error": "Something went wrong. Please try again."}), 500
 
 

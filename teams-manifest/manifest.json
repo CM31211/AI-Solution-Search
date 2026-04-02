@@ -2,13 +2,12 @@
   "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
   "manifestVersion": "1.17",
   "version": "1.0.0",
-  "id": "<YOUR-TEAMS-APP-GUID>",
-  "packageName": "com.eisneramper.aisolutionsearch",
+  "id": "1f87942d-31ac-4a21-9582-20d32182780f",
   "developer": {
     "name": "EisnerAmper",
-    "websiteUrl": "https://<YOUR-WEBAPP-FQDN>",
-    "privacyUrl": "https://<YOUR-WEBAPP-FQDN>",
-    "termsOfUseUrl": "https://<YOUR-WEBAPP-FQDN>"
+    "websiteUrl": "https://webapp-sb-cm31211-aiss-hncxg8c7defperh3.eastus2-01.azurewebsites.net",
+    "privacyUrl": "https://webapp-sb-cm31211-aiss-hncxg8c7defperh3.eastus2-01.azurewebsites.net",
+    "termsOfUseUrl": "https://webapp-sb-cm31211-aiss-hncxg8c7defperh3.eastus2-01.azurewebsites.net"
   },
   "name": {
     "short": "AI Solution Search",
@@ -27,17 +26,17 @@
     {
       "entityId": "aisolutionsearch",
       "name": "AI Solution Search",
-      "contentUrl": "https://<YOUR-WEBAPP-FQDN>/",
-      "websiteUrl": "https://<YOUR-WEBAPP-FQDN>/",
+      "contentUrl": "https://webapp-sb-cm31211-aiss-hncxg8c7defperh3.eastus2-01.azurewebsites.net/",
+      "websiteUrl": "https://webapp-sb-cm31211-aiss-hncxg8c7defperh3.eastus2-01.azurewebsites.net/",
       "scopes": ["personal", "team", "groupchat"]
     }
   ],
   "validDomains": [
-    "<YOUR-WEBAPP-FQDN>"
+    "webapp-sb-cm31211-aiss-hncxg8c7defperh3.eastus2-01.azurewebsites.net"
   ],
   "webApplicationInfo": {
-    "id": "<YOUR-AAD-CLIENT-ID>",
-    "resource": "api://<YOUR-WEBAPP-FQDN>/<YOUR-AAD-CLIENT-ID>"
+    "id": "1f87942d-31ac-4a21-9582-20d32182780f",
+    "resource": "api://1f87942d-31ac-4a21-9582-20d32182780f"
   },
   "permissions": ["identity", "messageTeamMembers"]
 }
