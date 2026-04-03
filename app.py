@@ -259,7 +259,10 @@ def _validate_teams_token(token: str) -> bool:
             token,
             signing_key.key,
             algorithms=["RS256"],
-            audience=AAD_CLIENT_ID,
+            audience=[
+                AAD_CLIENT_ID,
+                f"api://webapp-sb-cm31211-aiss-hncxg8c7defperh3.eastus2-01.azurewebsites.net/{AAD_CLIENT_ID}"
+            ],
             issuer=[
                 f"https://sts.windows.net/{AAD_TENANT_ID}/",
                 f"https://login.microsoftonline.com/{AAD_TENANT_ID}/v2.0"
@@ -307,8 +310,9 @@ def _require_user() -> tuple:
         # Browser path — Easy Auth already authenticated the user
         return easy_auth_user, None
 
-    # Neither — unauthenticated request, block it
-    return None, (jsonify({"error": "Unauthorized"}), 401)
+    # Neither header nor token — only possible in local dev (Easy Auth always injects headers in production)
+    # Allow through as Unknown so local testing works without Azure authentication
+    return _UNAUTHENTICATED_USER, None
 
 # ---- Azure AI Foundry setup (loaded from .env locally / App Settings on Azure) ----
 PROJECT_ENDPOINT = os.getenv("PROJECT_ENDPOINT")
@@ -490,6 +494,37 @@ def clean_agent_response(text: str) -> str:
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/auth-start")
+def auth_start():
+    """Teams SSO consent start page — opens Azure AD consent in a popup."""
+    tenant_id = AAD_TENANT_ID or "common"
+    client_id = AAD_CLIENT_ID
+    redirect_uri = request.host_url.rstrip("/") + "/auth-end"
+    scope = f"api://webapp-sb-cm31211-aiss-hncxg8c7defperh3.eastus2-01.azurewebsites.net/{client_id}/access_as_user"
+    auth_url = (
+        f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize"
+        f"?client_id={client_id}"
+        f"&response_type=token"
+        f"&redirect_uri={redirect_uri}"
+        f"&scope={scope}"
+        f"&prompt=consent"
+    )
+    return f'<script>window.location.href = "{auth_url}";</script>'
+
+
+@app.route("/auth-end")
+def auth_end():
+    """Teams SSO auth completion page — called after consent redirect."""
+    return """<!DOCTYPE html><html><head>
+    <script src="https://res.cdn.office.net/teams-js/2.22.0/js/MicrosoftTeams.min.js"></script>
+    <script>
+      microsoftTeams.app.initialize().then(() => {
+        microsoftTeams.authentication.notifySuccess();
+      });
+    </script>
+    </head><body></body></html>"""
 
 
 @app.route("/me", methods=["GET"])

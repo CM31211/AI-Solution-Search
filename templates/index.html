@@ -6,248 +6,376 @@
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://res.cdn.office.net/teams-js/2.22.0/js/MicrosoftTeams.min.js"></script>
   <style>
-    body { font-family: Arial, sans-serif; margin: 0; background: #f5f5f5; }
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f5f5f5;
+      height: 100vh;
+      display: flex;
+      overflow: hidden;
+    }
 
     :root {
       --ea-black: #111111;
-      --ea-gold: #c9a24d;   /* soft professional gold */
-      --ea-blue: #0b5cff;   /* existing send button blue */
-      --ea-gray-bg: #fafafa;
+      --ea-gold: #c9a24d;
+      --ea-blue: #0b5cff;
+      --sidebar-width: 220px;
+      --sidebar-collapsed-width: 52px;
     }
 
-    /* Floating launcher button */
-    .chat-launcher {
-      position: fixed;
-      right: 20px;
-      bottom: 20px;
-      width: 56px;
-      height: 56px;
-      border-radius: 50%;
-      background: #111;
-      color: white;
-      border: 2px solid var(--ea-gold);
-      cursor: pointer;
-      font-size: 22px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+    /* ── SIDEBAR ── */
+    .sidebar {
+      width: var(--sidebar-width);
+      min-width: var(--sidebar-width);
+      background: var(--ea-black);
       display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 9999;
-    }
-
-    .chat-launcher:hover {
-      box-shadow: 0 0 0 2px rgba(201,162,77,0.6),
-              0 10px 28px rgba(0,0,0,0.35);
-    }
-
-    /* Chat widget container */
-    .chat-widget {
-      position: fixed;
-      right: 20px;
-      bottom: 90px;
-      width: 40%;
-      height: 85%;
-      background: white;
-      border-radius: 14px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.25);
-      overflow: hidden;
-      display: none; /* hidden by default */
       flex-direction: column;
-      z-index: 9999;
+      height: 100vh;
+      transition: width 0.25s ease, min-width 0.25s ease;
+      overflow: hidden;
+      flex-shrink: 0;
+      position: relative;
     }
 
-    .chat-header {
-      background: #111;
-      color: #111111;
-      padding: 12px;
+    .sidebar.collapsed {
+      width: var(--sidebar-collapsed-width);
+      min-width: var(--sidebar-collapsed-width);
+    }
+
+    /* Top: logo + toggle */
+    .sidebar-top {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 10px;
-      border-bottom: 1px solid rgba(201,162,77,0.25); /* subtle gold accent */
+      padding: 12px 10px;
+      flex-shrink: 0;
     }
 
-    .chat-title {
-      font-weight: 600;
-      font-size: 18px;
-      line-height: 1.2;
-      color: #f5f5f5;
+    .sidebar-logo img {
+      width: 90px;
+      display: block;
+      transition: opacity 0.2s;
     }
 
-    .chat-subtitle {
-      font-size: 12px;
-      color: #cfcfcf;
-      margin-top: 2px;
+    .sidebar.collapsed .sidebar-logo img {
+      opacity: 0;
+      pointer-events: none;
+      width: 0;
     }
 
-    .header-actions {
+    .toggle-btn {
+      background: none;
+      border: none;
+      color: #fff;
+      font-size: 20px;
+      cursor: pointer;
+      padding: 4px 6px;
+      border-radius: 6px;
+      flex-shrink: 0;
+      line-height: 1;
+    }
+
+    .toggle-btn:hover { background: rgba(255,255,255,0.1); }
+
+    /* New Chat button (expanded) */
+    .new-chat-btn {
       display: flex;
       align-items: center;
       gap: 8px;
+      margin: 0 10px 8px;
+      padding: 8px 12px;
+      background: #fff;
+      color: #111;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      flex-shrink: 0;
+      white-space: nowrap;
+      overflow: hidden;
     }
 
-    .header-btn {
-      background: #f3f3f3;
-      color: #111111;
-      border: 1px solid #dddddd;
-      padding: 7px 10px;
-      border-radius: 10px;
-      cursor: pointer;
-      font-size: 12px;
-    }
+    .new-chat-btn:hover { background: #f0f0f0; }
 
-    .close-btn {
-      background: #f3f3f3;
-      color: #111111;
-      border: 1px solid #dddddd;
-      width: 32px;
-      height: 32px;
-      border-radius: 10px;
-      cursor: pointer;
+    .sidebar.collapsed .new-chat-btn { display: none; }
+
+    /* New Chat icon (collapsed) */
+    .new-chat-icon-btn {
+      display: none;
+      background: #fff;
+      border: none;
+      color: #111;
       font-size: 18px;
+      cursor: pointer;
+      margin: 0 auto 8px;
+      width: 30px;
+      height: 30px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
     }
 
-    /* ✅ Governance panel (static info panel) */
+    .new-chat-icon-btn:hover { background: #f0f0f0; }
+
+    .sidebar.collapsed .new-chat-icon-btn { display: flex; }
+
+    /* Divider */
+    .sidebar-divider {
+      height: 1px;
+      background: rgba(255,255,255,0.1);
+      margin: 0 10px 8px;
+      flex-shrink: 0;
+    }
+
+    .sidebar.collapsed .sidebar-divider { margin: 0 6px 8px; }
+
+    /* History header */
+    .history-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 12px;
+      cursor: pointer;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+
+    .history-header:hover { background: rgba(255,255,255,0.05); }
+
+    .history-label {
+      color: #aaa;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+    }
+
+    .history-arrow {
+      color: #aaa;
+      font-size: 10px;
+      transition: transform 0.2s;
+      flex-shrink: 0;
+    }
+
+    .history-arrow.collapsed-arrow { transform: rotate(-90deg); }
+
+    .sidebar.collapsed .history-header { display: none; }
+
+    /* History wrapper — always flex:1 so bottom stays pinned */
+    .sidebar-history-wrapper {
+      flex: 1;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .sidebar.collapsed .sidebar-history-wrapper { flex: 1; }
+
+    /* History list */
+    .sidebar-history {
+      flex: 1;
+      overflow-y: auto;
+      padding: 4px 0;
+    }
+
+    .sidebar-history::-webkit-scrollbar { width: 4px; }
+    .sidebar-history::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+
+    .sidebar.collapsed .sidebar-history { display: none; }
+
+    .sidebar-history-item {
+      padding: 7px 12px;
+      color: #ccc;
+      font-size: 12px;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      border-radius: 6px;
+      margin: 1px 6px;
+    }
+
+    .sidebar-history-item:hover { background: rgba(255,255,255,0.08); color: #fff; }
+    .sidebar-history-item.active { background: rgba(201,162,77,0.2); color: #fff; border-left: 3px solid var(--ea-gold); padding-left: 9px; }
+
+    /* Bottom area: user name + EisnerAmper */
+    .sidebar-title-area {
+      padding: 12px 12px 14px;
+      border-top: 1px solid rgba(255,255,255,0.1);
+      flex-shrink: 0;
+    }
+
+    .sidebar-logo-text {
+      color: #fff;
+      font-size: 13px;
+      font-weight: 700;
+      text-align: left;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .sidebar-logo-sub {
+      color: var(--ea-gold);
+      font-size: 11px;
+      font-weight: 600;
+      text-align: left;
+      margin-top: 2px;
+      white-space: nowrap;
+    }
+
+    .sidebar.collapsed .sidebar-title-area { display: none; }
+
+    /* ── MAIN PANEL ── */
+    .main-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* Header */
+    .chat-header {
+      background: var(--ea-black);
+      color: #fff;
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      border-bottom: 1px solid rgba(201,162,77,0.25);
+    }
+
+    .chat-header-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .chat-title { font-weight: 700; font-size: 17px; color: #f5f5f5; }
+    .chat-subtitle { font-size: 11px; color: #bbb; margin-top: 1px; }
+
+    /* Governance panel */
     .governance-panel {
       background: #f4f6f8;
       border-left: 4px solid var(--ea-blue);
-      padding: 10px 12px;
+      padding: 10px 14px;
       font-size: 12px;
       color: #111;
-      line-height: 1.35;
+      line-height: 1.4;
+      flex-shrink: 0;
     }
 
-    .governance-title {
-      font-weight: 800;
-      margin-bottom: 6px;
-    }
+    .governance-title { font-weight: 800; margin-bottom: 5px; }
+    .governance-panel ul { margin: 5px 0 0 18px; padding: 0; }
+    .governance-panel li { margin-bottom: 3px; }
+    .governance-panel a { color: var(--ea-gold); text-decoration: underline; font-weight: 600; }
 
-    .governance-panel ul {
-      margin: 6px 0 0 18px;
-      padding: 0;
-    }
-
-    .governance-panel li {
-      margin-bottom: 4px;
-    }
-
-    .governance-panel a {
-      color: var(--ea-gold);
-      text-decoration: underline;
-      font-weight: 600;
-    }
-
+    /* Messages */
     .messages {
       flex: 1;
       overflow-y: auto;
-      padding: 12px;
+      padding: 16px;
       background: #fafafa;
     }
 
+    .messages::-webkit-scrollbar { width: 6px; }
+    .messages::-webkit-scrollbar-thumb { background: #ddd; border-radius: 3px; }
+
     .bubble {
-      padding: 10px 12px;
+      padding: 10px 14px;
       border-radius: 12px;
       margin: 8px 0;
-      max-width: 85%;
-      white-space: pre-wrap;
+      max-width: 82%;
       font-size: 15px;
-      line-height: 1.35;
+      line-height: 1.5;
     }
 
-    .user { background: #d9ecff; margin-left: auto; }
+    .user { background: #d9ecff; margin-left: auto; white-space: pre-wrap; }
     .assistant { background: #e9e9e9; margin-right: auto; }
-
-    .input-area {
-      display: flex;
-      gap: 10px;
-      padding: 10px;
-      border-top: 1px solid #ddd;
-      background: white;
-    }
-
-    input {
-      flex: 1;
-      padding: 10px;
-      border-radius: 10px;
-      border: 1px solid #ccc;
-      outline: none;
-      font-size: 13px;
-    }
-
-    .send {
-      background: #0b5cff;
-      color: white;
-      border: none;
-      padding: 10px 12px;
-      border-radius: 10px;
-      cursor: pointer;
-      font-size: 13px;
-    }
-
-    .thinking { opacity: 0.85; font-style: italic; }
+    .thinking { opacity: 0.75; font-style: italic; }
 
     .bubble.assistant p { margin: 6px 0; }
-
-    .bubble.assistant h1,
-    .bubble.assistant h2,
-    .bubble.assistant h3,
-    .bubble.assistant h4 {
-      font-weight: 800;
-      margin: 10px 0 6px;
+    .bubble.assistant h1, .bubble.assistant h2,
+    .bubble.assistant h3, .bubble.assistant h4 {
+      font-weight: 800; margin: 10px 0 5px;
     }
-
-    .bubble.assistant ul,
-    .bubble.assistant ol {
-      margin: 4px 0 6px 18px;
-      padding: 0;
-    }
-
+    .bubble.assistant ul, .bubble.assistant ol { margin: 4px 0 6px 18px; padding: 0; }
     .bubble.assistant li { margin-bottom: 3px; }
-
-    .bubble.assistant br { line-height: 1; }
-
-    .bubble.assistant a {
-      color: var(--ea-gold);
-      font-weight: 500;
-      text-decoration: underline;
-    }
-
     .bubble.assistant strong { font-weight: 800; }
-
-    .bubble span { transition: all 0.2s ease; }
-
-    .chat-icon {
-      width: 45px;
-      height: 22px;
-      display: block;
-      fill: none;
-      color: inherit;
-    }
-
-    .chat-icon-header {
-      width: 81px;
-      height: 18px;
-      margin-right: 8px;
-      display: block;
-      fill: none;
-      color: inherit;
-    }
+    .bubble.assistant a { color: var(--ea-gold); font-weight: 500; text-decoration: underline; }
 
     .section-title {
       font-weight: 800;
-      font-size: 15px;
-      margin-top: 14px;
-      margin-bottom: 6px;
+      font-size: 14px;
+      margin: 12px 0 5px;
       color: #111;
-      border-left: 4px solid #0b5cff;
+      border-left: 4px solid var(--ea-blue);
       padding-left: 8px;
     }
 
-    /* [HISTORY] History panel — replaces messages area when viewing past conversations */
+    /* Input area */
+    .input-area {
+      display: flex;
+      align-items: flex-end;
+      gap: 10px;
+      padding: 12px 16px;
+      background: #fff;
+      flex-shrink: 0;
+    }
+
+    textarea#input {
+      flex: 1;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid #ccc;
+      outline: none;
+      font-size: 14px;
+      font-family: Arial, sans-serif;
+      resize: none;
+      overflow-y: hidden;
+      min-height: 42px;
+      max-height: 200px;
+      line-height: 1.4;
+    }
+
+    textarea#input:focus { border-color: #999; }
+
+    .send-btn {
+      background: var(--ea-blue);
+      color: #fff;
+      border: none;
+      padding: 10px 18px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      flex-shrink: 0;
+      height: 42px;
+    }
+
+    .send-btn:hover { background: #0047cc; }
+
+    /* Feedback */
+    .feedback-row {
+      margin-top: 8px;
+      font-size: 16px;
+      user-select: none;
+    }
+
+    .feedback-row span { cursor: pointer; margin-right: 10px; }
+
+    /* History view inside main panel */
     .history-panel {
       flex: 1;
       overflow-y: auto;
-      padding: 12px;
+      padding: 16px;
       background: #fafafa;
       display: none;
       flex-direction: column;
@@ -263,7 +391,7 @@
     }
 
     .history-conversation {
-      background: white;
+      background: #fff;
       border-radius: 10px;
       border: 1px solid #e0e0e0;
       margin-bottom: 10px;
@@ -278,6 +406,7 @@
       justify-content: space-between;
       align-items: center;
       color: #111;
+      border-radius: 10px;
     }
 
     .history-conv-header:hover { background: #f5f5f5; }
@@ -290,14 +419,13 @@
       overflow-y: auto;
     }
 
-    .history-message { margin: 8px 0; font-size: 13px; }
-
     .history-query {
       background: #d9ecff;
       padding: 7px 10px;
       border-radius: 8px;
       margin-bottom: 4px;
       color: #111;
+      font-size: 13px;
     }
 
     .history-response {
@@ -305,39 +433,60 @@
       padding: 7px 10px;
       border-radius: 8px;
       color: #111;
+      font-size: 13px;
       line-height: 1.4;
+      margin-bottom: 8px;
     }
 
-    /* [HISTORY] Green left border = liked, red left border = disliked */
     .history-feedback-like    { border-left: 3px solid #22c55e; }
     .history-feedback-dislike { border-left: 3px solid #ef4444; }
   </style>
 </head>
-
 <body>
 
-  <!-- Floating chat launcher -->
-  <button class="chat-launcher" id="chatLauncher" title="Close chat">×</button>
-
-  <!-- Chat widget -->
-  <div class="chat-widget" id="chatWidget">
-    <div class="chat-header">
-      <div style="display:flex; align-items:center;">
-        <img src="/static/agent-icon.svg" alt="AI Solution Search" class="chat-icon-header">
-        <div style="padding-left: 15px;">
-          <div class="chat-title">AI Solution Search</div>
-          <div class="chat-subtitle">Your Internal AI-Powered Capability Discovery Assistant.</div>
-        </div>
+  <!-- SIDEBAR -->
+  <div class="sidebar" id="sidebar">
+    <div class="sidebar-top">
+      <div class="sidebar-logo">
+        <img src="/static/agent-icon.svg" alt="EisnerAmper AI">
       </div>
+      <button class="toggle-btn" onclick="toggleSidebar()" title="Toggle sidebar">&#9776;</button>
+    </div>
 
-      <div class="header-actions">
-        <button class="header-btn" onclick="resetChat()">New chat</button>
-        <button class="header-btn" id="historyBtn" onclick="toggleHistory()">History</button>
-        <button class="close-btn" onclick="toggleChat(false)" title="Close">×</button>
+    <button class="new-chat-btn" onclick="startNewChat()">&#43; New Chat</button>
+    <button class="new-chat-icon-btn" onclick="startNewChat()" title="New Chat">&#9998;</button>
+
+    <div class="sidebar-divider"></div>
+
+    <div class="history-header" onclick="toggleHistoryPanel()">
+      <span class="history-label">History</span>
+      <span class="history-arrow" id="historyArrow">&#9660;</span>
+    </div>
+
+    <div class="sidebar-history-wrapper">
+      <div class="sidebar-history" id="sidebarHistory">
+        <div style="color:#666;font-size:12px;padding:8px 12px;">Loading...</div>
       </div>
     </div>
 
-    <!-- ✅ Governance Usage Guidance Panel (Option 1) -->
+    <div class="sidebar-title-area">
+      <div class="sidebar-logo-text" id="sidebarUserName">AI Solution Search</div>
+      <div class="sidebar-logo-sub">EisnerAmper</div>
+    </div>
+  </div>
+
+  <!-- MAIN PANEL -->
+  <div class="main-panel">
+    <div class="chat-header">
+      <div class="chat-header-left">
+        <img src="/static/agent-icon.svg" alt="AI" style="width:36px;height:18px;">
+        <div>
+          <div class="chat-title">AI Solution Search</div>
+          <div class="chat-subtitle">Your Internal AI-Powered Capability Discovery Assistant</div>
+        </div>
+      </div>
+    </div>
+
     <div class="governance-panel" id="governancePanel">
       <div class="governance-title">Usage Guidance</div>
       <ul>
@@ -347,52 +496,155 @@
         <ul>
           <li>Tool issues: <strong>Mangesh Ramnathkar</strong> — <a href="mailto:mangesh.ramnathkar@eisneramper.com">mangesh.ramnathkar@eisneramper.com</a></li>
           <li>Data exposure concerns: <strong>Dylan Stafford</strong> — <a href="mailto:dylan.stafford@eisneramper.com">dylan.stafford@eisneramper.com</a></li>
-          <li>Governance questions: <strong>Dave O’Brien</strong> — <a href="mailto:david.obrien@eisneramper.com">david.o’brien@eisneramper.com</a></li>
+          <li>Governance questions: <strong>Dave O'Brien</strong> — <a href="mailto:david.obrien@eisneramper.com">david.o'brien@eisneramper.com</a></li>
         </ul>
       </ul>
     </div>
 
     <div id="messages" class="messages"></div>
-
-    <!-- [HISTORY] History panel — shown in place of messages when user clicks History -->
     <div id="historyPanel" class="history-panel"></div>
 
     <div class="input-area">
-      <input id="input" type="text" placeholder="Type your message..." />
-      <button class="send" onclick="sendMessage()">Send</button>
+      <textarea id="input" placeholder="Describe your client's situation..." rows="1"></textarea>
+      <button class="send-btn" onclick="sendMessage()">Send</button>
     </div>
   </div>
 
   <script>
-    const chatLauncher = document.getElementById("chatLauncher");
-    const chatWidget = document.getElementById("chatWidget");
-    const messagesDiv = document.getElementById("messages");
-    const input = document.getElementById("input");
+    // ── Teams Silent SSO ──
+    let _teamsToken = null;
 
-    function toggleChat(forceOpen) {
-      const shouldOpen = (typeof forceOpen === "boolean")
-        ? forceOpen
-        : (chatWidget.style.display === "none" || chatWidget.style.display === "");
+    let _teamsAuthError = null;
 
-      chatWidget.style.display = shouldOpen ? "flex" : "none";
-      chatLauncher.innerHTML = shouldOpen
-        ? "×"
-        : '<img src="/static/agent-icon.svg" alt="AI Solution Search" class="chat-icon">';
-      chatLauncher.title = shouldOpen ? "Close chat" : "Open chat";
-
-      if (shouldOpen) setTimeout(() => input.focus(), 50);
+    async function _getTeamsToken() {
+      return new Promise((resolve) => {
+        microsoftTeams.authentication.getAuthToken({
+          successCallback: (token) => { _teamsToken = token; resolve(token); },
+          failureCallback: (error) => { _teamsAuthError = error; resolve(null); }
+        });
+      });
     }
 
-    chatLauncher.addEventListener("click", () => toggleChat());
+    async function _getTeamsTokenWithConsent() {
+      // First try silent token acquisition
+      const token = await _getTeamsToken();
+      if (token) return token;
+
+      // If silent failed due to consent, trigger consent popup then retry
+      if (_teamsAuthError && (_teamsAuthError.includes("consent") || _teamsAuthError.includes("interaction"))) {
+        try {
+          await new Promise((resolve, reject) => {
+            microsoftTeams.authentication.authenticate({
+              url: window.location.origin + "/auth-start",
+              width: 600,
+              height: 535,
+              successCallback: resolve,
+              failureCallback: reject
+            });
+          });
+          // Consent granted — retry silent token acquisition
+          return await _getTeamsToken();
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    }
+
+    let _isTeamsContext = false;
+    let _teamsInitDone = false;
+
+    async function initTeams() {
+      try {
+        await microsoftTeams.app.initialize();
+        _isTeamsContext = true;
+        const token = await _getTeamsTokenWithConsent();
+        if (!token) {
+          // In Teams but token acquisition failed — block UI and show retry option
+          const errDetail = _teamsAuthError ? `<div style="color:#888;font-size:12px;margin-bottom:12px;word-break:break-all;">${_teamsAuthError}</div>` : "";
+          document.getElementById("messages").innerHTML =
+            '<div style="padding:20px;text-align:center;">' +
+            '<div style="color:#c0392b;font-size:14px;margin-bottom:8px;">Authentication failed. Please try again or contact your administrator.</div>' +
+            errDetail +
+            '<button onclick="initTeams()" style="padding:8px 20px;background:#111;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;">Retry</button>' +
+            '</div>';
+          document.querySelector(".input-area").style.display = "none";
+          _teamsInitDone = true;
+          return;
+        }
+      } catch {
+        // Not in Teams context — browser path, Easy Auth handles authentication
+        _isTeamsContext = false;
+        _teamsToken = null;
+      }
+      // Auth passed (or not in Teams) — show greeting
+      _teamsInitDone = true;
+      addBubble("Hi! Describe your client's situation, and I'll help identify EisnerAmper's relevant capabilities, experience, and solutions.", "assistant");
+      loadCurrentUser();
+      loadSidebarHistory();
+    }
+
+    initTeams();
+
+    function _authHeaders() {
+      const h = { "Content-Type": "application/json" };
+      if (_teamsToken) h["Authorization"] = "Bearer " + _teamsToken;
+      return h;
+    }
+
+    // ── Sidebar ──
+    let _sidebarCollapsed = false;
+    let _historyPanelOpen = true;
+
+    function toggleSidebar() {
+      _sidebarCollapsed = !_sidebarCollapsed;
+      document.getElementById("sidebar").classList.toggle("collapsed", _sidebarCollapsed);
+    }
+
+    function toggleHistoryPanel() {
+      _historyPanelOpen = !_historyPanelOpen;
+      const history = document.getElementById("sidebarHistory");
+      const arrow = document.getElementById("historyArrow");
+      history.style.display = _historyPanelOpen ? "" : "none";
+      arrow.classList.toggle("collapsed-arrow", !_historyPanelOpen);
+    }
+
+    // ── Load logged-in user ──
+    async function loadCurrentUser() {
+      try {
+        const res = await fetch("/me", { headers: _authHeaders() });
+        if (res.ok) {
+          const data = await res.json();
+          document.getElementById("sidebarUserName").textContent = data.display_name || "AI Solution Search";
+        }
+      } catch { /* silent */ }
+    }
+
+    // ── Textarea auto-resize ──
+    const inputEl = document.getElementById("input");
+    inputEl.addEventListener("input", () => {
+      inputEl.style.height = "auto";
+      const newHeight = Math.min(inputEl.scrollHeight, 200);
+      inputEl.style.height = newHeight + "px";
+      inputEl.style.overflowY = newHeight >= 200 ? "auto" : "hidden";
+    });
+
+    inputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+
+    // ── Chat ──
+    const messagesDiv = document.getElementById("messages");
 
     function addBubble(text, who, extraClass = "", allowFeedback = false, query = "", threadId = "", serverTimestamp = "") {
       const bubble = document.createElement("div");
       bubble.className = `bubble ${who} ${extraClass}`;
 
       if (who === "assistant") {
-        // 1) First, convert known section titles in RAW text into HTML markers
         let raw = text;
-
         const sections = [
           "Summary of Client Problem:",
           "How EisnerAmper Can Help (Capabilities):",
@@ -401,64 +653,38 @@
           "Suggested Next Steps:"
         ];
 
-        function escapeRegex(s) {
-          return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        }
+        function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 
         sections.forEach(section => {
           const regex = new RegExp(escapeRegex(section), "gi");
           raw = raw.replace(regex, `\n<div class="section-title">${section}</div>\n`);
         });
 
-        // 2) Now parse markdown AFTER replacements
-        let formattedText = marked.parse(raw);
-        bubble.innerHTML = formattedText;
+        bubble.innerHTML = marked.parse(raw);
 
         if (allowFeedback) {
-          // [LOGGING] Use server timestamp so feedback always matches the stored log exactly
           const messageTimestamp = serverTimestamp || new Date().toISOString();
-
           const feedbackDiv = document.createElement("div");
-          feedbackDiv.style.marginTop = "8px";
-          feedbackDiv.style.fontSize = "16px";
-          feedbackDiv.style.userSelect = "none";
+          feedbackDiv.className = "feedback-row";
 
           const thumbsUp = document.createElement("span");
           const thumbsDown = document.createElement("span");
-
           thumbsUp.innerHTML = "👍";
           thumbsDown.innerHTML = "👎";
-
-          thumbsUp.style.cursor = "pointer";
-          thumbsDown.style.cursor = "pointer";
-          thumbsUp.style.marginRight = "12px";
 
           function disableFeedback(selected, other) {
             selected.style.color = "#0b5cff";
             selected.style.fontWeight = "bold";
-            selected.style.opacity = "1";
-            selected.title = "Feedback recorded";
-
-            thumbsUp.onclick = null;
-            thumbsDown.onclick = null;
-
-            thumbsUp.style.cursor = "default";
-            thumbsDown.style.cursor = "default";
-
             other.style.opacity = "0.4";
             other.style.pointerEvents = "none";
-            selected.style.pointerEvents = "auto";
+            thumbsUp.onclick = null;
+            thumbsDown.onclick = null;
+            thumbsUp.style.cursor = "default";
+            thumbsDown.style.cursor = "default";
           }
 
-          thumbsUp.onclick = () => {
-            sendFeedback("like", text, threadId, messageTimestamp, query);
-            disableFeedback(thumbsUp, thumbsDown);
-          };
-
-          thumbsDown.onclick = () => {
-            sendFeedback("dislike", text, threadId, messageTimestamp, query);
-            disableFeedback(thumbsDown, thumbsUp);
-          };
+          thumbsUp.onclick = () => { sendFeedback("like", threadId, messageTimestamp, query); disableFeedback(thumbsUp, thumbsDown); };
+          thumbsDown.onclick = () => { sendFeedback("dislike", threadId, messageTimestamp, query); disableFeedback(thumbsDown, thumbsUp); };
 
           feedbackDiv.appendChild(thumbsUp);
           feedbackDiv.appendChild(thumbsDown);
@@ -469,67 +695,49 @@
       }
 
       messagesDiv.appendChild(bubble);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
       return bubble;
     }
 
-    // ---- Teams Silent SSO ----
-    let _teamsToken = null;
-
-    async function _getTeamsToken() {
-      return new Promise((resolve) => {
-        microsoftTeams.authentication.getAuthToken({
-          successCallback: (token) => { _teamsToken = token; resolve(token); },
-          failureCallback: ()      => resolve(null)
-        });
-      });
-    }
-
-    (async function initTeams() {
-      try {
-        await microsoftTeams.app.initialize();
-        // Running inside Teams — acquire token silently
-        await _getTeamsToken();
-      } catch {
-        // Not in Teams context — browser path, Easy Auth handles authentication
-        _teamsToken = null;
-      }
-    })();
-
-    function _authHeaders() {
-      const h = { "Content-Type": "application/json" };
-      if (_teamsToken) h["Authorization"] = "Bearer " + _teamsToken;
-      return h;
-    }
-    // ---- End Teams Silent SSO ----
-
-    // [LOGGING] Send feedback — backend embeds it directly into the conversation log
-    async function sendFeedback(type, responseText, threadId, messageTimestamp, query) {
+    async function sendFeedback(type, threadId, messageTimestamp, query) {
       await fetch("/feedback", {
         method: "POST",
         headers: _authHeaders(),
         body: JSON.stringify({
-          feedback:           type,                       // "like" or "dislike"
-          thread_id:          threadId,                   // locates the conversation log blob
-          message_timestamp:  messageTimestamp,           // identifies the exact response within the conversation
-          feedback_timestamp: new Date().toISOString()    // when user clicked
+          feedback: type,
+          thread_id: threadId,
+          message_timestamp: messageTimestamp,
+          feedback_timestamp: new Date().toISOString()
         })
       });
+      // Update in-memory _convData so history view shows correct highlight
+      const item = document.querySelector(`[data-thread-id="${threadId}"]`);
+      if (item && item._convData) {
+        const match = item._convData.messages.find(m =>
+          m.timestamp && m.timestamp.substring(0, 19) === messageTimestamp.substring(0, 19)
+        );
+        if (match) match.feedback = type;
+      }
     }
 
     async function sendMessage() {
-      const msg = input.value.trim();
+      const msg = inputEl.value.trim();
       if (!msg) return;
 
+      // Hide history panel, show messages
+      showChatView();
+
       addBubble(msg, "user");
-      input.value = "";
+      inputEl.value = "";
+      inputEl.style.height = "auto";
+      inputEl.style.overflowY = "hidden";
 
       const thinkingBubble = addBubble("Thinking...", "assistant", "thinking");
-      
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 120000);
 
-      try
-      {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 180000);
+
+      try {
         let res = await fetch("/chat", {
           method: "POST",
           headers: _authHeaders(),
@@ -538,7 +746,6 @@
         });
         clearTimeout(timeoutId);
 
-        // Token expired — refresh silently and retry once
         if (res.status === 401 && _teamsToken) {
           await _getTeamsToken();
           res = await fetch("/chat", {
@@ -554,10 +761,9 @@
         if (contentType.includes("application/json")) {
           data = await res.json();
         } else {
-          // if it's HTML or plain text, read it and show short error
           const text = await res.text();
-          console.error("Non-JSON response from /chat:", text);
-          throw new Error("Server returned non-JSON response. Check server logs.");
+          console.error("Non-JSON response:", text);
+          throw new Error("Unexpected server response.");
         }
 
         thinkingBubble.remove();
@@ -565,165 +771,176 @@
         if (!res.ok || data.error) {
           addBubble("Something went wrong while processing your request. Please try again.", "assistant");
         } else {
-          // [LOGGING] Pass query, thread_id and server timestamp so feedback always matches the log exactly
-          const assistantBubble = addBubble(data.reply, "assistant", "", true, msg, data.thread_id, data.message_timestamp);
-
-          const offset = 300; // adjust this value if needed
-          const bubbleTop = assistantBubble.offsetTop;
-          messagesDiv.scrollTo({
-            top: bubbleTop - offset,
-            behavior: "smooth"
-          });
+          addBubble(data.reply, "assistant", "", true, msg, data.thread_id, data.message_timestamp);
+          _addToSidebarHistory(data.thread_id, msg, data.reply, data.message_timestamp);
         }
-      } catch(err){
+      } catch (err) {
+        clearTimeout(timeoutId);
         thinkingBubble.remove();
-        console.error("Chat request failed:", err);
-        addBubble("Something went wrong while processing your request. Please try again.", "assistant");
+        console.error("Chat error:", err);
+        if (err.name === "AbortError") {
+          addBubble("The request timed out. The service may still be warming up — please try again.", "assistant");
+        } else {
+          addBubble("Something went wrong while processing your request. Please try again.", "assistant");
+        }
       }
-
-
-      
     }
 
-    async function resetChat() {
+    async function startNewChat() {
       await fetch("/reset", { method: "POST", headers: _authHeaders() });
+      showChatView();
       messagesDiv.innerHTML = "";
-      addBubble("Hi! Describe your client’s situation, and I’ll help identify EisnerAmper’s relevant capabilities, experience, and solutions.", "assistant");
-      input.focus();
+      _currentThreadId = null;
+      document.querySelectorAll(".sidebar-history-item").forEach(el => el.classList.remove("active"));
+      addBubble("Hi! Describe your client's situation, and I'll help identify EisnerAmper's relevant capabilities, experience, and solutions.", "assistant");
+      inputEl.focus();
     }
 
-    // [HISTORY] Toggle between chat view and history view
-    let _historyVisible = false;
-
-    function toggleHistory() {
-      _historyVisible ? showChat() : loadHistory();
-    }
-
-    function showChat() {
-      _historyVisible = false;
+    // ── History ──
+    function showChatView() {
       document.getElementById("messages").style.display = "";
       document.getElementById("historyPanel").style.display = "none";
       document.querySelector(".input-area").style.display = "";
-      document.getElementById("historyBtn").textContent = "History";
-    }
-
-    async function loadHistory() {
-      _historyVisible = true;
-      document.getElementById("messages").style.display = "none";
-      document.querySelector(".input-area").style.display = "none";
-      document.getElementById("historyBtn").textContent = "← Chat";
-
-      const panel = document.getElementById("historyPanel");
-      panel.style.display = "flex";
-      panel.innerHTML = '<div style="text-align:center;color:#888;font-size:13px;margin-top:20px;">Loading...</div>';
-
-      try {
-        const res = await fetch("/history", { headers: _authHeaders() });
-        if (!res.ok) {
-          panel.innerHTML = '<div style="text-align:center;color:#c0392b;font-size:13px;margin-top:20px;">Unable to load your history. Please try again later.</div>';
-          return;
-        }
-        const data = await res.json();
-        renderHistory(data.conversations || []);
-      } catch (e) {
-        panel.innerHTML = '<div style="text-align:center;color:#c0392b;font-size:13px;margin-top:20px;">Something went wrong while loading your history. Please try again later.</div>';
+      document.querySelectorAll(".sidebar-history-item").forEach(el => el.classList.remove("active"));
+      if (_currentThreadId) {
+        const activeItem = document.querySelector(`[data-thread-id="${_currentThreadId}"]`);
+        if (activeItem) activeItem.classList.add("active");
       }
     }
 
-    function formatHistoryDate(mmddyyyy) {
-      const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-      const mm = parseInt(mmddyyyy.substring(0, 2)) - 1;
-      const dd = parseInt(mmddyyyy.substring(2, 4));
-      const yyyy = mmddyyyy.substring(4, 8);
-      return `${months[mm]} ${dd}, ${yyyy}`;
+    function showHistoryView() {
+      document.getElementById("messages").style.display = "none";
+      document.getElementById("historyPanel").style.display = "flex";
+      document.querySelector(".input-area").style.display = "none";
     }
 
-    function formatHistoryTime(isoTs) {
-      if (!isoTs) return "";
-      return new Date(isoTs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    async function loadSidebarHistory() {
+      const container = document.getElementById("sidebarHistory");
+      try {
+        const res = await fetch("/history", { headers: _authHeaders() });
+        if (!res.ok) { container.innerHTML = '<div style="color:#666;font-size:12px;padding:8px 12px;">Unable to load history.</div>'; return; }
+        const data = await res.json();
+        const conversations = data.conversations || [];
+        if (!conversations.length) {
+          container.innerHTML = '<div style="color:#666;font-size:12px;padding:8px 12px;">No recent conversations.</div>';
+          return;
+        }
+        // Sort by latest message timestamp descending — most recent conversation first
+        conversations.sort((a, b) => {
+          const aTs = (a.messages && a.messages.length) ? a.messages[a.messages.length - 1].timestamp : "";
+          const bTs = (b.messages && b.messages.length) ? b.messages[b.messages.length - 1].timestamp : "";
+          return bTs.localeCompare(aTs);
+        });
+        container.innerHTML = "";
+        conversations.forEach((conv, idx) => {
+          const firstMsg = conv.messages && conv.messages[0];
+          const preview = firstMsg ? firstMsg.query.substring(0, 45) + (firstMsg.query.length > 45 ? "..." : "") : "Empty conversation";
+          const item = document.createElement("div");
+          item.className = "sidebar-history-item";
+          item.textContent = preview;
+          item.title = preview;
+          item.onclick = () => {
+            document.querySelectorAll(".sidebar-history-item").forEach(el => el.classList.remove("active"));
+            item.classList.add("active");
+            openHistoryConversation(conv);
+          };
+          container.appendChild(item);
+        });
+      } catch {
+        container.innerHTML = '<div style="color:#666;font-size:12px;padding:8px 12px;">Unable to load history.</div>';
+      }
+    }
+
+    function openHistoryConversation(conv) {
+      showHistoryView();
+      const panel = document.getElementById("historyPanel");
+      const messages = conv.messages || [];
+
+      let html = `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+          <span style="font-size:12px;color:#888;font-style:italic;">&#128274; Read-only — this is a past conversation</span>
+          <button onclick="showChatView()" style="padding:6px 14px;background:#111;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;">&#8592; Back to Chat</button>
+        </div>
+        <div style="font-weight:700;font-size:15px;margin-bottom:12px;color:#111;">
+          ${escapeHtml((messages[0] && messages[0].query.substring(0, 60)) || "Conversation")}
+        </div>`;
+
+      if (!messages.length) {
+        html += '<div style="color:#888;font-size:13px;">No messages in this conversation.</div>';
+      } else {
+        messages.forEach(msg => {
+          const feedbackClass = msg.feedback === "like" ? "history-feedback-like" : msg.feedback === "dislike" ? "history-feedback-dislike" : "";
+          const feedbackIcon = msg.feedback === "like" ? " 👍" : msg.feedback === "dislike" ? " 👎" : "";
+          const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+          html += `<div style="margin-bottom:12px;">
+            <div class="history-query">${escapeHtml(msg.query)}</div>
+            <div class="history-response ${feedbackClass}">
+              ${time ? `<span style="float:right;color:#999;font-size:11px;">${time}</span>` : ""}
+              ${feedbackIcon ? `<span style="font-size:14px;">${feedbackIcon}</span>` : ""}
+              <div style="overflow:auto;">${marked.parse(msg.response || "")}</div>
+            </div>
+          </div>`;
+        });
+      }
+
+      panel.innerHTML = html;
     }
 
     function escapeHtml(text) {
       return (text || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
     }
 
-    function toggleConv(id) {
-      const el = document.getElementById(id);
-      el.style.display = el.style.display === "block" ? "none" : "block";
-    }
+    // ── Add new conversation entry to sidebar after first message ──
+    let _currentConvMessages = [];
+    let _currentThreadId = null;
+    let _isFirstMessage = true;
 
-    function renderHistory(conversations) {
-      const panel = document.getElementById("historyPanel");
+    function _addToSidebarHistory(threadId, query, reply, timestamp) {
+      const container = document.getElementById("sidebarHistory");
 
-      if (!conversations.length) {
-        panel.innerHTML = '<div style="text-align:center;color:#888;font-size:13px;margin-top:20px;">No conversations found in the last 30 days. Start a chat to see your history here.</div>';
+      // Remove "no conversations" placeholder if present
+      const placeholder = container.querySelector("div");
+      if (placeholder && placeholder.textContent.includes("No recent")) {
+        placeholder.remove();
+      }
+
+      const preview = query.substring(0, 45) + (query.length > 45 ? "..." : "");
+      const conv = { thread_id: threadId, messages: [{ query, response: reply, timestamp }] };
+
+      // Check if this thread already exists in sidebar and update it, else prepend
+      const existing = container.querySelector(`[data-thread-id="${threadId}"]`);
+      if (existing) {
+        const updated = existing._convData
+          ? { ...existing._convData, messages: [...existing._convData.messages, { query, response: reply, timestamp }] }
+          : conv;
+        existing._convData = updated;
         return;
       }
 
-      // Group by date
-      const byDate = {};
-      conversations.forEach(conv => {
-        const d = conv.date || "unknown";
-        if (!byDate[d]) byDate[d] = [];
-        byDate[d].push(conv);
-      });
-
-      let html = '<div style="font-weight:700;font-size:15px;margin-bottom:8px;">My Conversations</div>';
-
-      Object.keys(byDate).sort().reverse().forEach(date => {
-        html += `<div class="history-date-header">${date !== "unknown" ? formatHistoryDate(date) : "Unknown date"}</div>`;
-
-        byDate[date].forEach((conv, idx) => {
-          const firstMsg = conv.messages && conv.messages[0];
-          const preview = firstMsg
-            ? firstMsg.query.substring(0, 60) + (firstMsg.query.length > 60 ? "..." : "")
-            : "Empty conversation";
-          const count = (conv.messages || []).length;
-          const convId = `conv_${date}_${idx}`;
-
-          html += `<div class="history-conversation">
-            <div class="history-conv-header" onclick="toggleConv('${convId}')">
-              <span>${escapeHtml(preview)}</span>
-              <span style="font-size:11px;color:#888;">${count} exchange(s) ▾</span>
-            </div>
-            <div id="${convId}" class="history-messages">`;
-
-          (conv.messages || []).forEach(msg => {
-            const feedbackClass = msg.feedback === "like"
-              ? "history-feedback-like"
-              : msg.feedback === "dislike" ? "history-feedback-dislike" : "";
-            const feedbackIcon = msg.feedback === "like" ? " 👍" : msg.feedback === "dislike" ? " 👎" : "";
-            const time = formatHistoryTime(msg.timestamp);
-            const renderedResponse = marked.parse(msg.response || "");
-
-            html += `<div class="history-message">
-              <div class="history-query">${escapeHtml(msg.query)}</div>
-              <div class="history-response ${feedbackClass}">
-                ${time ? `<span style="float:right;color:#999;font-size:11px;">${time}</span>` : ""}
-                ${feedbackIcon ? `<span style="font-size:14px;">${feedbackIcon}</span>` : ""}
-                ${renderedResponse}
-              </div>
-            </div>`;
-          });
-
-          html += `</div></div>`;
-        });
-      });
-
-      panel.innerHTML = html;
+      const item = document.createElement("div");
+      item.className = "sidebar-history-item";
+      item.textContent = preview;
+      item.title = preview;
+      item.dataset.threadId = threadId;
+      item._convData = conv;
+      item.onclick = () => {
+        document.querySelectorAll(".sidebar-history-item").forEach(el => el.classList.remove("active"));
+        item.classList.add("active");
+        // If this is the current active chat, go back to live chat instead of read-only view
+        if (threadId === _currentThreadId) {
+          showChatView();
+        } else {
+          openHistoryConversation(item._convData);
+        }
+      };
+      // Highlight this as the active conversation
+      document.querySelectorAll(".sidebar-history-item").forEach(el => el.classList.remove("active"));
+      item.classList.add("active");
+      container.insertBefore(item, container.firstChild);
+      _currentThreadId = threadId;
     }
-    // [HISTORY] End history functions
 
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") sendMessage();
-    });
-
-    addBubble(
-      "Hi! Describe your client’s situation, and I’ll help identify EisnerAmper’s relevant capabilities, experience, and solutions.",
-      "assistant"
-    );
-
-    chatWidget.style.display = "flex";
+    // ── Init ── (handled inside initTeams())
   </script>
 </body>
 </html>
