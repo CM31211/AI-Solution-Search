@@ -18,6 +18,21 @@ load_dotenv()
 
 app = Flask(__name__)
 
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return response
+
+@app.route("/chat", methods=["OPTIONS"])
+@app.route("/history", methods=["OPTIONS"])
+@app.route("/feedback", methods=["OPTIONS"])
+@app.route("/reset", methods=["OPTIONS"])
+@app.route("/me", methods=["OPTIONS"])
+def handle_options():
+    return "", 204
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -32,10 +47,23 @@ _STORAGE_ACCOUNT_URL = os.environ.get("AZURE_STORAGE_ACCOUNT_URL")
 _STORAGE_CONNECTION_STRING = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
 _BLOB_CONTAINER = os.environ.get("BLOB_CONTAINER")
 
+# ---- [STARTUP] Log key config at import time so Log Stream shows it immediately ----
+print(f"[STARTUP] AZURE_STORAGE_ACCOUNT_URL={'set' if _STORAGE_ACCOUNT_URL else 'NOT SET'}")
+print(f"[STARTUP] AZURE_STORAGE_CONNECTION_STRING={'set' if _STORAGE_CONNECTION_STRING else 'NOT SET'}")
+print(f"[STARTUP] BLOB_CONTAINER={_BLOB_CONTAINER or 'NOT SET'}")
+print(f"[STARTUP] LOGS_BLOB_CONTAINER={os.environ.get('LOGS_BLOB_CONTAINER') or 'NOT SET'}")
+print(f"[STARTUP] AAD_TENANT_ID={'set' if os.environ.get('AAD_TENANT_ID') else 'NOT SET'}")
+print(f"[STARTUP] AAD_CLIENT_ID={os.environ.get('AAD_CLIENT_ID', 'NOT SET')}")
+print(f"[STARTUP] WEBAPP_FQDN={os.environ.get('WEBAPP_FQDN', 'NOT SET')}")
+print(f"[STARTUP] PROJECT_ENDPOINT={'set' if os.environ.get('PROJECT_ENDPOINT') else 'NOT SET'}")
+print(f"[STARTUP] AGENT_ID={os.environ.get('AGENT_ID', 'NOT SET')}")
+
 if _STORAGE_CONNECTION_STRING:
     _blob_service = BlobServiceClient.from_connection_string(_STORAGE_CONNECTION_STRING)
+    print("[STARTUP] BlobServiceClient created via connection string")
 else:
     _blob_service = BlobServiceClient(account_url=_STORAGE_ACCOUNT_URL, credential=DefaultAzureCredential())
+    print("[STARTUP] BlobServiceClient created via DefaultAzureCredential")
 
 def _load_json_from_blob(blob_name: str) -> dict:
     blob_client = _blob_service.get_blob_client(container=_BLOB_CONTAINER, blob=blob_name)
@@ -70,6 +98,7 @@ def _save_conversation_log(thread_id: str, user: str, query: str, response: str,
         try:
             existing = blob_client.download_blob().readall()
             conversation = json.loads(existing.decode("utf-8"))
+            print(f"[LOGGING] Appending to existing conversation log: {blob_name}")
         except Exception:
             # Blob doesn't exist yet — start a new conversation record
             conversation = {
@@ -78,6 +107,7 @@ def _save_conversation_log(thread_id: str, user: str, query: str, response: str,
                 "date":      date_folder,
                 "messages":  []
             }
+            print(f"[LOGGING] Creating new conversation log: {blob_name}")
 
         # Append this exchange — no feedback field yet, added only if user clicks like/dislike
         conversation["messages"].append({
@@ -91,6 +121,7 @@ def _save_conversation_log(thread_id: str, user: str, query: str, response: str,
             overwrite=True,
             content_settings=None
         )
+        print(f"[LOGGING] Conversation log saved: {blob_name} (total messages: {len(conversation['messages'])})")
     except Exception as e:
         print(f"[LOGGING] Failed to save conversation log: {e}")
 
@@ -104,6 +135,7 @@ def _save_error_log(error_msg: str, user: str, context: str = "") -> None:
     """
     try:
         if not _blob_service or not _LOGS_CONTAINER:
+            print(f"[ERROR_LOG] Skipped (no blob service or logs container) — context={context} error={error_msg}")
             return
         now = datetime.now(timezone.utc)
         date_folder = now.strftime("%m%d%Y")
@@ -119,13 +151,16 @@ def _save_error_log(error_msg: str, user: str, context: str = "") -> None:
         }
         blob_client = _blob_service.get_blob_client(container=_LOGS_CONTAINER, blob=blob_name)
         blob_client.upload_blob(json.dumps(error_data, indent=2), overwrite=True)
-    except Exception:
-        pass  # Never let error logging interrupt anything
+        print(f"[ERROR_LOG] Saved: {blob_name} context={context}")
+    except Exception as e:
+        print(f"[ERROR_LOG] Failed to save error log: {e}")  # Never let error logging interrupt anything
 
 
 # Load from environment variables
 SERVICE_LINE_CONTACTS = json.loads(os.environ.get("SERVICE_LINE_CONTACTS", "{}"))
 SERVICE_LINE_KEYWORDS = json.loads(os.environ.get("SERVICE_LINE_KEYWORDS", "{}"))
+print(f"[STARTUP] SERVICE_LINE_CONTACTS loaded: {list(SERVICE_LINE_CONTACTS.keys())}")
+print(f"[STARTUP] SERVICE_LINE_KEYWORDS loaded: {list(SERVICE_LINE_KEYWORDS.keys())}")
 
 # Globals populated by background startup thread
 PARTNERS_DIRECTORY = None
@@ -167,10 +202,14 @@ def append_contact_note(reply_text: str, service_line: str, contact_map: dict) -
 
 @app.route("/feedback", methods=["POST"])
 def feedback():
+    client = _detect_client()
     user, err = _require_user()
     if err:
         return err
     data = request.json
+    feedback_type = data.get("feedback", "unknown")
+    thread_id = data.get("thread_id", "unknown")
+    print(f"[FEEDBACK] [{client}] user={user} type={feedback_type} thread_id={thread_id}")
 
     # [LOGGING] Fire-and-forget background thread — never blocks response
     threading.Thread(target=_embed_feedback_in_conversation, args=(user, data), daemon=True).start()
@@ -232,6 +271,7 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-key-change-me")
 # ---- Azure AD / Teams SSO config ----
 AAD_TENANT_ID = os.environ.get("AAD_TENANT_ID", "")
 AAD_CLIENT_ID = os.environ.get("AAD_CLIENT_ID", "")
+WEBAPP_FQDN   = os.environ.get("WEBAPP_FQDN", "")
 
 _jwks_client = None
 _jwks_client_lock = threading.Lock()
@@ -241,10 +281,9 @@ def _get_jwks_client() -> PyJWKClient:
     if _jwks_client is None:
         with _jwks_client_lock:
             if _jwks_client is None:
-                _jwks_client = PyJWKClient(
-                    f"https://login.microsoftonline.com/{AAD_TENANT_ID}/discovery/v2.0/keys",
-                    cache_keys=True
-                )
+                jwks_url = f"https://login.microsoftonline.com/{AAD_TENANT_ID}/discovery/v2.0/keys"
+                print(f"[AUTH] Initialising JWKS client: {jwks_url}")
+                _jwks_client = PyJWKClient(jwks_url, cache_keys=True)
     return _jwks_client
 
 def _validate_teams_token(token: str) -> bool:
@@ -252,35 +291,69 @@ def _validate_teams_token(token: str) -> bool:
     Checks: signature, algorithm, audience, issuer, expiry, and access_as_user scope.
     """
     if not AAD_TENANT_ID or not AAD_CLIENT_ID:
+        print("[AUTH] _validate_teams_token: AAD_TENANT_ID or AAD_CLIENT_ID not configured")
         return False
     try:
         signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
+        expected_audiences = [
+            AAD_CLIENT_ID,
+            f"api://{WEBAPP_FQDN}/{AAD_CLIENT_ID}"
+        ]
         decoded = jwt.decode(
             token,
             signing_key.key,
             algorithms=["RS256"],
-            audience=[
-                AAD_CLIENT_ID,
-                f"api://webapp-sb-cm31211-aiss-hncxg8c7defperh3.eastus2-01.azurewebsites.net/{AAD_CLIENT_ID}"
-            ],
+            audience=expected_audiences,
             issuer=[
                 f"https://sts.windows.net/{AAD_TENANT_ID}/",
                 f"https://login.microsoftonline.com/{AAD_TENANT_ID}/v2.0"
             ],
             options={"require": ["exp", "aud", "iss"]}
         )
+        # Log key claims for verification (no sensitive data — upn is email)
+        scp  = decoded.get("scp", "")
+        upn  = decoded.get("upn") or decoded.get("preferred_username", "unknown")
+        aud  = decoded.get("aud", "")
+        iss  = decoded.get("iss", "")
+        exp  = decoded.get("exp", 0)
+        exp_dt = datetime.fromtimestamp(exp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if exp else "none"
+        print(f"[AUTH] Token decoded — upn={upn} aud={aud} iss={iss} scp='{scp}' exp={exp_dt}")
+
         # Enforce access_as_user scope — scp is a space-separated string
-        scp = decoded.get("scp", "")
         if "access_as_user" not in scp.split():
-            msg = "Teams token rejected: 'access_as_user' scope missing"
-            print(msg)
+            msg = f"Teams token rejected: 'access_as_user' scope missing (scp='{scp}')"
+            print(f"[AUTH] {msg}")
             threading.Thread(target=_save_error_log, args=(msg, _UNAUTHENTICATED_USER, "teams_token_scope"), daemon=True).start()
             return False
+        print(f"[AUTH] Token valid for user={upn}")
         return True
     except Exception as e:
-        print(f"Teams token validation failed: {e}")
+        print(f"[AUTH] Teams token validation failed: {e}")
         threading.Thread(target=_save_error_log, args=(e, _UNAUTHENTICATED_USER, "teams_token_validation"), daemon=True).start()
         return False
+
+
+def _detect_client() -> str:
+    """
+    Detects whether the request is coming from Browser, Teams Web, or Teams Desktop.
+
+    Detection logic:
+      - No Bearer token + Easy Auth headers present  → "Browser"
+      - Bearer token + "Electron" in User-Agent      → "Teams Desktop"
+        (Teams desktop app is built on Electron; its UA always contains "Electron")
+      - Bearer token + no "Electron" in User-Agent   → "Teams Web"
+      - No token, no Easy Auth (local dev)           → "Local Dev"
+    """
+    auth_header    = request.headers.get("Authorization", "")
+    easy_auth_user = request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME") or \
+                     request.headers.get("X-MS-CLIENT-PRINCIPAL-ID")
+    user_agent     = request.headers.get("User-Agent", "")
+
+    if not auth_header and easy_auth_user:
+        return "Browser"
+    if auth_header:
+        return "Teams Desktop" if "Electron" in user_agent else "Teams Web"
+    return "Local Dev"
 
 
 def _require_user() -> tuple:
@@ -296,22 +369,35 @@ def _require_user() -> tuple:
         request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME") or
         request.headers.get("X-MS-CLIENT-PRINCIPAL-ID")
     )
+    client = _detect_client()
+    user_agent = request.headers.get("User-Agent", "")
+    print(f"[AUTH] {request.method} {request.path} — "
+          f"client='{client}' "
+          f"auth_header={'present' if auth_header else 'absent'} "
+          f"easy_auth_user={easy_auth_user or 'absent'} "
+          f"user_agent={user_agent[:80]!r}")
 
     if auth_header:
         # Teams path — validate Bearer token
         token = auth_header.removeprefix("Bearer ").strip()
+        print(f"[AUTH] [{client}] Teams token received (length={len(token)}) — validating...")
         if not _validate_teams_token(token):
+            print(f"[AUTH] [{client}] Token validation FAILED for {request.path} — returning 401")
             return None, (jsonify({"error": "Unauthorized"}), 401)
         # Token is valid — user identity comes from Easy Auth header if present,
         # otherwise fall back to Unknown (Teams SSO doesn't inject Easy Auth headers)
-        return easy_auth_user or _UNAUTHENTICATED_USER, None
+        resolved_user = easy_auth_user or _UNAUTHENTICATED_USER
+        print(f"[AUTH] [{client}] Token valid — resolved user={resolved_user}")
+        return resolved_user, None
 
     if easy_auth_user:
         # Browser path — Easy Auth already authenticated the user
+        print(f"[AUTH] [{client}] Easy Auth — user={easy_auth_user}")
         return easy_auth_user, None
 
     # Neither header nor token — only possible in local dev (Easy Auth always injects headers in production)
     # Allow through as Unknown so local testing works without Azure authentication
+    print(f"[AUTH] [{client}] No auth headers — falling back to Unknown")
     return _UNAUTHENTICATED_USER, None
 
 # ---- Azure AI Foundry setup (loaded from .env locally / App Settings on Azure) ----
@@ -327,6 +413,7 @@ project = AIProjectClient(
     credential=DefaultAzureCredential(),
     endpoint=PROJECT_ENDPOINT
 )
+print(f"[STARTUP] AIProjectClient created — endpoint={PROJECT_ENDPOINT}")
 
 # Globals for agent (populated by background startup thread)
 agent = None
@@ -336,17 +423,31 @@ _startup_error = None
 def _background_startup():
     global PARTNERS_DIRECTORY, SKILLS_DATABASE, ALL_NAMES, agent, _startup_error
     try:
-        PARTNERS_DIRECTORY = _load_json_from_blob(os.environ.get("PARTNERS_DIRECTORY_BLOB"))
-        SKILLS_DATABASE    = _load_json_from_blob(os.environ.get("SKILLS_DATABASE_BLOB"))
+        partners_blob = os.environ.get("PARTNERS_DIRECTORY_BLOB")
+        skills_blob   = os.environ.get("SKILLS_DATABASE_BLOB")
+        print(f"[STARTUP] Loading blob: {partners_blob}")
+        PARTNERS_DIRECTORY = _load_json_from_blob(partners_blob)
+        partner_count = len(PARTNERS_DIRECTORY.get("partners", []))
+        print(f"[STARTUP] Partners directory loaded — {partner_count} entries")
+
+        print(f"[STARTUP] Loading blob: {skills_blob}")
+        SKILLS_DATABASE = _load_json_from_blob(skills_blob)
+        skills_count = len(SKILLS_DATABASE.get("Report_Entry", []))
+        print(f"[STARTUP] Skills database loaded — {skills_count} entries")
+
         ALL_NAMES.update(
             [p["Name"] for p in PARTNERS_DIRECTORY["partners"] if "Name" in p] +
             [s["Legal_Full_Name"] for s in SKILLS_DATABASE["Report_Entry"] if "Legal_Full_Name" in s]
         )
+        print(f"[STARTUP] ALL_NAMES populated — {len(ALL_NAMES)} unique names")
+
+        print(f"[STARTUP] Fetching agent: {AGENT_ID}")
         agent = project.agents.get_agent(AGENT_ID)
-        print("Background startup complete.")
+        print(f"[STARTUP] Agent loaded — id={agent.id} name={getattr(agent, 'name', 'unknown')}")
+        print("[STARTUP] Background startup complete.")
     except Exception as e:
         _startup_error = e
-        print(f"Background startup failed: {e}")
+        print(f"[STARTUP] Background startup FAILED: {e}")
     finally:
         _startup_ready.set()
 
@@ -358,6 +459,7 @@ def get_or_create_thread_id() -> str:
     if "thread_id" not in session:
         thread = project.agents.threads.create()
         session["thread_id"] = thread.id
+        print(f"[CHAT] New agent thread created: {thread.id}")
     return session["thread_id"]
 
 
@@ -469,10 +571,9 @@ def clean_agent_response(text: str) -> str:
         return ""
 
     # Remove citation markers like  or multiple of them
-    time.sleep(3)
-    # text = re.sub(r"【\d+:\d+†source】", "", text)    
     # text = re.sub(r"【\d+:\d+†source】", "", text)
-    # text = re.sub(r"【\d+:\d+†.*?】", "", text)    
+    # text = re.sub(r"【\d+:\d+†source】", "", text)
+    # text = re.sub(r"【\d+:\d+†.*?】", "", text)
     text = re.sub(r"【[^】]*】", "", text)
 
     # # Remove markdown headings (###, ##, #) at line starts
@@ -502,7 +603,8 @@ def auth_start():
     tenant_id = AAD_TENANT_ID or "common"
     client_id = AAD_CLIENT_ID
     redirect_uri = request.host_url.rstrip("/") + "/auth-end"
-    scope = f"api://webapp-sb-cm31211-aiss-hncxg8c7defperh3.eastus2-01.azurewebsites.net/{client_id}/access_as_user"
+    scope = f"api://{WEBAPP_FQDN}/{client_id}/access_as_user"
+    print(f"[AUTH] /auth-start — tenant={tenant_id} client={client_id} redirect={redirect_uri} scope={scope}")
     auth_url = (
         f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize"
         f"?client_id={client_id}"
@@ -517,6 +619,7 @@ def auth_start():
 @app.route("/auth-end")
 def auth_end():
     """Teams SSO auth completion page — called after consent redirect."""
+    print("[AUTH] /auth-end called — notifying Teams consent success")
     return """<!DOCTYPE html><html><head>
     <script src="https://res.cdn.office.net/teams-js/2.22.0/js/MicrosoftTeams.min.js"></script>
     <script>
@@ -536,16 +639,19 @@ def me():
     )
     local_part = logged_in_user.split("@")[0] if "@" in logged_in_user else logged_in_user
     display_name = " ".join(p.capitalize() for p in local_part.split("."))
+    print(f"[ME] user={logged_in_user} display_name={display_name}")
     return jsonify({"display_name": display_name})
 
 
 @app.route("/history", methods=["GET"])
 def history():
     """[HISTORY] Returns all conversation logs for the currently logged-in user."""
+    client = _detect_client()
     user, err = _require_user()
     if err:
         return err
     username = user.split("@")[0] if "@" in user else user
+    print(f"[HISTORY] [{client}] Loading history for user={username}")
     try:
         container_client = _blob_service.get_container_client(_LOGS_CONTAINER)
 
@@ -556,21 +662,26 @@ def history():
         }
 
         conversations = []
+        blobs_scanned = 0
+        blobs_matched = 0
         for blob in container_client.list_blobs():
+            blobs_scanned += 1
             # Blob path: MMDDYYYY/username/thread_id.json — only load blobs for this user within last 30 days
             parts = blob.name.split("/")
             if len(parts) == 3 and parts[1] == username and parts[0] in valid_dates:
+                blobs_matched += 1
                 try:
                     blob_client = _blob_service.get_blob_client(container=_LOGS_CONTAINER, blob=blob.name)
                     data = blob_client.download_blob().readall()
                     conversations.append(json.loads(data.decode("utf-8")))
                 except Exception as e:
                     print(f"[HISTORY] Failed to read blob {blob.name}: {e}")
+        print(f"[HISTORY] [{client}] Scan complete — blobs_scanned={blobs_scanned} blobs_matched={blobs_matched} conversations_loaded={len(conversations)}")
         # Sort newest date first
         conversations.sort(key=lambda c: c.get("date", ""), reverse=True)
         return jsonify({"conversations": conversations})
     except Exception as e:
-        print(f"[HISTORY] Failed to list conversations: {e}")
+        print(f"[HISTORY] [{client}] Failed to list conversations: {e}")
         return jsonify({"conversations": []})
 
 
@@ -579,29 +690,33 @@ def reset():
     _, err = _require_user()
     if err:
         return err
-    session.pop("thread_id", None)
+    old_thread = session.pop("thread_id", None)
+    print(f"[RESET] Session thread cleared — old_thread_id={old_thread or 'none'}")
     return jsonify({"ok": True})
 
 
 @app.route("/chat", methods=["POST"])
 def chat():
+    client = _detect_client()
     logged_in_user, err = _require_user()
     if err:
         return err
     _startup_ready.wait()  # block until background startup finishes
     if _startup_error:
-        print(f"Startup error prevented chat: {_startup_error}")
+        print(f"[CHAT] [{client}] Startup error prevented chat: {_startup_error}")
         return jsonify({"error": "Service is not ready. Please try again shortly."}), 503
-    print(f"User: {logged_in_user}")
+    print(f"[CHAT] [{client}] Request from user={logged_in_user}")
 
     user_message = request.json.get("message", "").strip()
     if not user_message:
         return jsonify({"error": "Empty message"}), 400
+    print(f"[CHAT] [{client}] Message length={len(user_message)} chars")
 
     max_retries = 3
     for attempt in range(1, max_retries + 1):
         try:
             thread_id = get_or_create_thread_id()
+            print(f"[CHAT] [{client}] Using thread_id={thread_id} (attempt {attempt}/{max_retries})")
 
             # Add user message
             project.agents.messages.create(
@@ -609,15 +724,18 @@ def chat():
                 role="user",
                 content=user_message
             )
+            print(f"[CHAT] [{client}] User message added to thread {thread_id}")
 
             # Run agent
+            print(f"[CHAT] [{client}] Starting agent run on thread {thread_id}")
             run = project.agents.runs.create_and_process(
                 thread_id=thread_id,
                 agent_id=agent.id
             )
+            print(f"[CHAT] [{client}] Agent run completed — status={run.status} run_id={run.id}")
 
             if run.status == "failed":
-                print(f"Agent run failed: {run.last_error}")
+                print(f"[CHAT] [{client}] Agent run FAILED: {run.last_error}")
                 return jsonify({"error": "Agent run failed"}), 500
 
             # Get latest assistant reply
@@ -625,6 +743,7 @@ def chat():
                 thread_id=thread_id,
                 order=ListSortOrder.ASCENDING
             ))
+            print(f"[CHAT] [{client}] Retrieved {len(messages)} messages from thread")
 
             raw_reply = ""
             for msg in reversed(messages):
@@ -632,19 +751,22 @@ def chat():
                     raw_reply = msg.text_messages[-1].text.value
                     break
 
+            print(f"[CHAT] [{client}] Raw reply length={len(raw_reply)} chars")
             assistant_reply = clean_agent_response(raw_reply)
             assistant_reply = validate_sme_names(assistant_reply)
             service_line = classify_service_line(user_message)
+            print(f"[CHAT] [{client}] Service line classified as: {service_line}")
             assistant_reply = append_contact_note(assistant_reply, service_line, SERVICE_LINE_CONTACTS)
 
             # [LOGGING] Compute timestamp here so both the log and the client use the exact same value
             message_timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             threading.Thread(target=_save_conversation_log, args=(thread_id, logged_in_user, user_message, assistant_reply, message_timestamp), daemon=True).start()
+            print(f"[CHAT] [{client}] Response ready — thread_id={thread_id} timestamp={message_timestamp} reply_length={len(assistant_reply)} chars")
 
             return jsonify({"reply": assistant_reply, "thread_id": thread_id, "message_timestamp": message_timestamp}), 200
 
         except ConnectionResetError as e:
-            print(f"Connection reset on attempt {attempt}/{max_retries}: {e}")
+            print(f"[CHAT] [{client}] ConnectionResetError on attempt {attempt}/{max_retries}: {e}")
             if attempt < max_retries:
                 time.sleep(2 ** attempt)  # 2s, 4s backoff
             else:
@@ -652,7 +774,7 @@ def chat():
                 return jsonify({"error": "Something went wrong. Please try again."}), 500
 
         except Exception as e:
-            print(f"Chat error: {e}")
+            print(f"[CHAT] [{client}] Error: {e}")
             threading.Thread(target=_save_error_log, args=(e, logged_in_user, "chat"), daemon=True).start()
             return jsonify({"error": "Something went wrong. Please try again."}), 500
 

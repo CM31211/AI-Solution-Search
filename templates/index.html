@@ -592,6 +592,52 @@
       return h;
     }
 
+    // ── Central fetch wrapper ──
+    // Uses redirect:'manual' so Easy Auth 302 redirects return type='opaqueredirect'
+    // instead of causing a CORS crash.
+    //
+    // Browser:        redirect full page to /.auth/login/aad to establish session cookie
+    // Teams Desktop:  open /.auth/login/aad in a Teams popup to establish session cookie
+    //                 in Electron's cookie store, then retry the request automatically
+    // Teams Web:      throw — Teams Web inherits browser session so this shouldn't happen
+    let _teamsDesktopSessionEstablished = false;
+
+    async function _teamsDesktopLogin() {
+      // Opens /.auth/login/aad in a Teams popup so Electron gets the session cookie.
+      // /auth-end calls microsoftTeams.authentication.notifySuccess() to close it.
+      return new Promise((resolve, reject) => {
+        microsoftTeams.authentication.authenticate({
+          url: window.location.origin + "/.auth/login/aad?post_login_redirect_uri=" + encodeURIComponent("/auth-end"),
+          width: 600,
+          height: 535,
+          successCallback: () => { _teamsDesktopSessionEstablished = true; resolve(); },
+          failureCallback: (err) => reject(new Error("Teams Desktop login failed: " + err))
+        });
+      });
+    }
+
+    async function _apiFetch(url, options = {}) {
+      const res = await fetch(url, { ...options, redirect: "manual" });
+      if (res.type === "opaqueredirect") {
+        if (!_isTeamsContext) {
+          // Browser — redirect full page to AAD login to establish session cookie
+          window.location.href = "/.auth/login/aad?post_login_redirect_uri=" + encodeURIComponent("/");
+          await new Promise(() => {}); // halt — page is navigating away
+        }
+        // Teams Desktop — establish session via popup, then retry once
+        const ua = navigator.userAgent;
+        if (ua.includes("Electron") && !_teamsDesktopSessionEstablished) {
+          await _teamsDesktopLogin();
+          // Retry the original request — session cookie now set in Electron
+          const retry = await fetch(url, { ...options, redirect: "manual" });
+          if (retry.type === "opaqueredirect") throw new Error("Authentication required after login");
+          return retry;
+        }
+        throw new Error("Authentication required");
+      }
+      return res;
+    }
+
     // ── Sidebar ──
     let _sidebarCollapsed = false;
     let _historyPanelOpen = true;
@@ -612,12 +658,12 @@
     // ── Load logged-in user ──
     async function loadCurrentUser() {
       try {
-        const res = await fetch("/me", { headers: _authHeaders() });
+        const res = await _apiFetch("/me", { headers: _authHeaders() });
         if (res.ok) {
           const data = await res.json();
           document.getElementById("sidebarUserName").textContent = data.display_name || "AI Solution Search";
         }
-      } catch { /* silent */ }
+      } catch { /* silent — _apiFetch already handles redirect for browser */ }
     }
 
     // ── Textarea auto-resize ──
@@ -700,16 +746,18 @@
     }
 
     async function sendFeedback(type, threadId, messageTimestamp, query) {
-      await fetch("/feedback", {
-        method: "POST",
-        headers: _authHeaders(),
-        body: JSON.stringify({
-          feedback: type,
-          thread_id: threadId,
-          message_timestamp: messageTimestamp,
-          feedback_timestamp: new Date().toISOString()
-        })
-      });
+      try {
+        await _apiFetch("/feedback", {
+          method: "POST",
+          headers: _authHeaders(),
+          body: JSON.stringify({
+            feedback: type,
+            thread_id: threadId,
+            message_timestamp: messageTimestamp,
+            feedback_timestamp: new Date().toISOString()
+          })
+        });
+      } catch { /* silent */ }
       // Update in-memory _convData so history view shows correct highlight
       const item = document.querySelector(`[data-thread-id="${threadId}"]`);
       if (item && item._convData) {
@@ -738,7 +786,7 @@
       const timeoutId = setTimeout(() => controller.abort(), 180000);
 
       try {
-        let res = await fetch("/chat", {
+        let res = await _apiFetch("/chat", {
           method: "POST",
           headers: _authHeaders(),
           body: JSON.stringify({ message: msg }),
@@ -747,8 +795,9 @@
         clearTimeout(timeoutId);
 
         if (res.status === 401 && _teamsToken) {
+          // Teams token may have expired — refresh and retry once
           await _getTeamsToken();
-          res = await fetch("/chat", {
+          res = await _apiFetch("/chat", {
             method: "POST",
             headers: _authHeaders(),
             body: JSON.stringify({ message: msg }),
@@ -787,7 +836,7 @@
     }
 
     async function startNewChat() {
-      await fetch("/reset", { method: "POST", headers: _authHeaders() });
+      try { await _apiFetch("/reset", { method: "POST", headers: _authHeaders() }); } catch { /* silent */ }
       showChatView();
       messagesDiv.innerHTML = "";
       _currentThreadId = null;
@@ -817,8 +866,12 @@
     async function loadSidebarHistory() {
       const container = document.getElementById("sidebarHistory");
       try {
-        const res = await fetch("/history", { headers: _authHeaders() });
-        if (!res.ok) { container.innerHTML = '<div style="color:#666;font-size:12px;padding:8px 12px;">Unable to load history.</div>'; return; }
+        const res = await _apiFetch("/history", { headers: _authHeaders() });
+        if (!res.ok) {
+          const errMsg = res.status === 403 ? "Forbidden" : `HTTP ${res.status}`;
+          container.innerHTML = `<div style="color:#666;font-size:12px;padding:8px 12px;">Unable to load history. (${errMsg})</div>`;
+          return;
+        }
         const data = await res.json();
         const conversations = data.conversations || [];
         if (!conversations.length) {
@@ -846,8 +899,8 @@
           };
           container.appendChild(item);
         });
-      } catch {
-        container.innerHTML = '<div style="color:#666;font-size:12px;padding:8px 12px;">Unable to load history.</div>';
+      } catch (e) {
+        container.innerHTML = `<div style="color:#666;font-size:12px;padding:8px 12px;">Unable to load history. (${e.message || e})</div>`;
       }
     }
 
