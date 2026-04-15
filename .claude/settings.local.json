@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "WebSearch",
-      "Bash(antenv/Scripts/pip install -r requirements.txt)"
+      "Bash(antenv/Scripts/pip install -r requirements.txt)",
+      "Bash(ls \"c:\\\\Chandan\\\\AI\\\\Agents\\\\SolutionSearch\\\\Code\"/*.py)"
     ]
   }
 }

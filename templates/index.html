@@ -588,7 +588,12 @@
 
     function _authHeaders() {
       const h = { "Content-Type": "application/json" };
-      if (_teamsToken) h["Authorization"] = "Bearer " + _teamsToken;
+      // Use X-Teams-Token instead of Authorization: Bearer.
+      // Easy Auth intercepts and validates the standard Authorization header —
+      // rejecting tokens from the Teams app registration (different audience).
+      // Custom headers are invisible to Easy Auth, so the request passes straight
+      // through to Flask which validates the token itself.
+      if (_teamsToken) h["X-Teams-Token"] = "Bearer " + _teamsToken;
       return h;
     }
 
@@ -602,35 +607,67 @@
     // Teams Web:      throw — Teams Web inherits browser session so this shouldn't happen
     let _teamsDesktopSessionEstablished = false;
 
-    async function _teamsDesktopLogin() {
-      // Opens /.auth/login/aad in a Teams popup so Electron gets the session cookie.
-      // /auth-end calls microsoftTeams.authentication.notifySuccess() to close it.
+    function _setTeamsStatusMessage(msg) {
+      const el = document.getElementById("sidebarHistory");
+      if (el) el.innerHTML = `<div style="color:#aaa;font-size:12px;padding:8px 12px;">${msg}</div>`;
+    }
+
+    async function _teamsSessionLogin() {
+      // Opens /.auth/login/aad in a Teams popup so Easy Auth sets a session cookie.
+      // /auth-end calls microsoftTeams.authentication.notifySuccess() to close the popup.
+      console.log("[TEAMS] Session not established — opening login popup to authenticate with Easy Auth...");
+      _setTeamsStatusMessage("Signing in to Teams session...");
       return new Promise((resolve, reject) => {
         microsoftTeams.authentication.authenticate({
           url: window.location.origin + "/.auth/login/aad?post_login_redirect_uri=" + encodeURIComponent("/auth-end"),
           width: 600,
           height: 535,
-          successCallback: () => { _teamsDesktopSessionEstablished = true; resolve(); },
-          failureCallback: (err) => reject(new Error("Teams Desktop login failed: " + err))
+          successCallback: () => {
+            console.log("[TEAMS] Login popup succeeded — session cookie established");
+            _setTeamsStatusMessage("Signed in. Loading history...");
+            _teamsDesktopSessionEstablished = true;
+            resolve();
+          },
+          failureCallback: (err) => {
+            console.error("[TEAMS] Login popup failed:", err);
+            _setTeamsStatusMessage("Sign-in failed. Please reload.");
+            reject(new Error("Teams session login failed: " + err));
+          }
         });
       });
     }
 
     async function _apiFetch(url, options = {}) {
       const res = await fetch(url, { ...options, redirect: "manual" });
-      if (res.type === "opaqueredirect") {
+
+      // Easy Auth 302 → opaqueredirect (no session cookie)
+      // Easy Auth 401 → Bearer token rejected by Easy Auth before reaching Flask
+      const needsLogin = res.type === "opaqueredirect" || res.status === 401;
+
+      if (needsLogin) {
+        console.log(`[TEAMS] ${url} blocked by Easy Auth (status=${res.status} type=${res.type}) — needs login`);
         if (!_isTeamsContext) {
           // Browser — redirect full page to AAD login to establish session cookie
+          console.log("[BROWSER] Redirecting to /.auth/login/aad for session login");
           window.location.href = "/.auth/login/aad?post_login_redirect_uri=" + encodeURIComponent("/");
           await new Promise(() => {}); // halt — page is navigating away
         }
-        // Teams Desktop — establish session via popup, then retry once
-        const ua = navigator.userAgent;
-        if (ua.includes("Electron") && !_teamsDesktopSessionEstablished) {
-          await _teamsDesktopLogin();
-          // Retry the original request — session cookie now set in Electron
-          const retry = await fetch(url, { ...options, redirect: "manual" });
-          if (retry.type === "opaqueredirect") throw new Error("Authentication required after login");
+        // Teams (Web or Desktop) — open /.auth/login/aad popup to establish session cookie
+        if (!_teamsDesktopSessionEstablished) {
+          await _teamsSessionLogin();
+          // Retry without Bearer token — session cookie now drives auth through Easy Auth
+          console.log(`[TEAMS] Retrying ${url} after session login (without Bearer token)...`);
+          const retryOptions = { ...options };
+          if (retryOptions.headers) {
+            const h = { ...retryOptions.headers };
+            delete h["Authorization"];
+            retryOptions.headers = h;
+          }
+          const retry = await fetch(url, { ...retryOptions, redirect: "manual" });
+          console.log(`[TEAMS] Retry result: status=${retry.status} type=${retry.type}`);
+          if (retry.type === "opaqueredirect" || retry.status === 401) {
+            throw new Error("Authentication required after login");
+          }
           return retry;
         }
         throw new Error("Authentication required");
@@ -741,7 +778,13 @@
       }
 
       messagesDiv.appendChild(bubble);
-      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+      if (who === "assistant" && extraClass !== "thinking") {
+        const offset = 300;
+        const bubbleTop = bubble.offsetTop;
+        messagesDiv.scrollTo({ top: bubbleTop - offset, behavior: "smooth" });
+      } else {
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+      }
       return bubble;
     }
 

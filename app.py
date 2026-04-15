@@ -21,7 +21,7 @@ app = Flask(__name__)
 @app.after_request
 def add_cors_headers(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Teams-Token"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return response
 
@@ -157,8 +157,8 @@ def _save_error_log(error_msg: str, user: str, context: str = "") -> None:
 
 
 # Load from environment variables
-SERVICE_LINE_CONTACTS = json.loads(os.environ.get("SERVICE_LINE_CONTACTS", "{}"))
-SERVICE_LINE_KEYWORDS = json.loads(os.environ.get("SERVICE_LINE_KEYWORDS", "{}"))
+SERVICE_LINE_CONTACTS = json.loads(os.environ.get("SERVICE_LINE_CONTACTS") or "{}")
+SERVICE_LINE_KEYWORDS = json.loads(os.environ.get("SERVICE_LINE_KEYWORDS") or "{}")
 print(f"[STARTUP] SERVICE_LINE_CONTACTS loaded: {list(SERVICE_LINE_CONTACTS.keys())}")
 print(f"[STARTUP] SERVICE_LINE_KEYWORDS loaded: {list(SERVICE_LINE_KEYWORDS.keys())}")
 
@@ -206,7 +206,7 @@ def feedback():
     user, err = _require_user()
     if err:
         return err
-    data = request.json
+    data = request.get_json(silent=True) or {}
     feedback_type = data.get("feedback", "unknown")
     thread_id = data.get("thread_id", "unknown")
     print(f"[FEEDBACK] [{client}] user={user} type={feedback_type} thread_id={thread_id}")
@@ -297,6 +297,7 @@ def _validate_teams_token(token: str) -> bool:
         signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
         expected_audiences = [
             AAD_CLIENT_ID,
+            f"api://{AAD_CLIENT_ID}",
             f"api://{WEBAPP_FQDN}/{AAD_CLIENT_ID}"
         ]
         decoded = jwt.decode(
@@ -338,21 +339,24 @@ def _detect_client() -> str:
     Detects whether the request is coming from Browser, Teams Web, or Teams Desktop.
 
     Detection logic:
-      - No Bearer token + Easy Auth headers present  → "Browser"
-      - Bearer token + "Electron" in User-Agent      → "Teams Desktop"
-        (Teams desktop app is built on Electron; its UA always contains "Electron")
-      - Bearer token + no "Electron" in User-Agent   → "Teams Web"
-      - No token, no Easy Auth (local dev)           → "Local Dev"
+      - X-Teams-Token present + "Electron" in User-Agent → "Teams Desktop"
+      - X-Teams-Token present + no "Electron"            → "Teams Web"
+      - No X-Teams-Token + Easy Auth headers present     → "Browser"
+      - Nothing                                          → "Local Dev"
+
+    Note: Teams clients send X-Teams-Token (custom header) instead of
+    Authorization: Bearer — this bypasses Easy Auth's token validation entirely
+    so the token reaches Flask for proper validation.
     """
-    auth_header    = request.headers.get("Authorization", "")
+    teams_token    = request.headers.get("X-Teams-Token", "")
     easy_auth_user = request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME") or \
                      request.headers.get("X-MS-CLIENT-PRINCIPAL-ID")
     user_agent     = request.headers.get("User-Agent", "")
 
-    if not auth_header and easy_auth_user:
-        return "Browser"
-    if auth_header:
+    if teams_token:
         return "Teams Desktop" if "Electron" in user_agent else "Teams Web"
+    if easy_auth_user:
+        return "Browser"
     return "Local Dev"
 
 
@@ -360,11 +364,11 @@ def _require_user() -> tuple:
     """
     Returns (user, error_response) for all API routes.
     Accepts either:
-      - Easy Auth headers (browser path) — X-MS-CLIENT-PRINCIPAL-NAME / ID
-      - Valid Teams Bearer token (Teams path)
-    Rejects requests that have neither — unauthenticated browser access blocked at API level.
+      - X-Teams-Token header (Teams path) — custom header invisible to Easy Auth
+      - Easy Auth headers (browser path)  — X-MS-CLIENT-PRINCIPAL-NAME / ID
+    Falls back to Unknown for local dev (no headers at all).
     """
-    auth_header = request.headers.get("Authorization", "")
+    teams_token_header = request.headers.get("X-Teams-Token", "")
     easy_auth_user = (
         request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME") or
         request.headers.get("X-MS-CLIENT-PRINCIPAL-ID")
@@ -373,19 +377,17 @@ def _require_user() -> tuple:
     user_agent = request.headers.get("User-Agent", "")
     print(f"[AUTH] {request.method} {request.path} — "
           f"client='{client}' "
-          f"auth_header={'present' if auth_header else 'absent'} "
+          f"teams_token={'present' if teams_token_header else 'absent'} "
           f"easy_auth_user={easy_auth_user or 'absent'} "
           f"user_agent={user_agent[:80]!r}")
 
-    if auth_header:
-        # Teams path — validate Bearer token
-        token = auth_header.removeprefix("Bearer ").strip()
+    if teams_token_header:
+        # Teams path — validate token from custom header (bypasses Easy Auth interception)
+        token = teams_token_header.removeprefix("Bearer ").strip()
         print(f"[AUTH] [{client}] Teams token received (length={len(token)}) — validating...")
         if not _validate_teams_token(token):
             print(f"[AUTH] [{client}] Token validation FAILED for {request.path} — returning 401")
             return None, (jsonify({"error": "Unauthorized"}), 401)
-        # Token is valid — user identity comes from Easy Auth header if present,
-        # otherwise fall back to Unknown (Teams SSO doesn't inject Easy Auth headers)
         resolved_user = easy_auth_user or _UNAUTHENTICATED_USER
         print(f"[AUTH] [{client}] Token valid — resolved user={resolved_user}")
         return resolved_user, None
@@ -395,8 +397,7 @@ def _require_user() -> tuple:
         print(f"[AUTH] [{client}] Easy Auth — user={easy_auth_user}")
         return easy_auth_user, None
 
-    # Neither header nor token — only possible in local dev (Easy Auth always injects headers in production)
-    # Allow through as Unknown so local testing works without Azure authentication
+    # No token, no Easy Auth — local dev only
     print(f"[AUTH] [{client}] No auth headers — falling back to Unknown")
     return _UNAUTHENTICATED_USER, None
 
@@ -461,6 +462,30 @@ def get_or_create_thread_id() -> str:
         session["thread_id"] = thread.id
         print(f"[CHAT] New agent thread created: {thread.id}")
     return session["thread_id"]
+
+
+def _cancel_active_runs(thread_id: str, client_label: str) -> None:
+    """Cancel any stuck active runs on the thread before adding a new message.
+    Prevents 'Can't add messages while a run is active' errors caused by
+    aborted/timed-out previous requests leaving a run in a non-terminal state.
+    """
+    _active_statuses = {"queued", "in_progress", "cancelling", "requires_action"}
+    try:
+        runs = list(project.agents.runs.list(thread_id=thread_id))
+        for run in runs:
+            if run.status in _active_statuses:
+                print(f"[CHAT] [{client_label}] Cancelling stuck run {run.id} (status={run.status}) on thread {thread_id}")
+                project.agents.runs.cancel(thread_id=thread_id, run_id=run.id)
+                for _ in range(10):
+                    time.sleep(1)
+                    updated = project.agents.runs.get(thread_id=thread_id, run_id=run.id)
+                    if updated.status not in _active_statuses:
+                        print(f"[CHAT] [{client_label}] Run {run.id} cancelled — final status={updated.status}")
+                        break
+                else:
+                    print(f"[CHAT] [{client_label}] Warning: run {run.id} did not reach terminal state after 10s")
+    except Exception as e:
+        print(f"[CHAT] [{client_label}] Warning: could not check/cancel active runs on thread {thread_id}: {e}")
 
 
 def validate_sme_names(text: str) -> str:
@@ -707,7 +732,7 @@ def chat():
         return jsonify({"error": "Service is not ready. Please try again shortly."}), 503
     print(f"[CHAT] [{client}] Request from user={logged_in_user}")
 
-    user_message = request.json.get("message", "").strip()
+    user_message = (request.get_json(silent=True) or {}).get("message", "").strip()
     if not user_message:
         return jsonify({"error": "Empty message"}), 400
     print(f"[CHAT] [{client}] Message length={len(user_message)} chars")
@@ -717,6 +742,9 @@ def chat():
         try:
             thread_id = get_or_create_thread_id()
             print(f"[CHAT] [{client}] Using thread_id={thread_id} (attempt {attempt}/{max_retries})")
+
+            # Cancel any stuck runs before adding a message
+            _cancel_active_runs(thread_id, client)
 
             # Add user message
             project.agents.messages.create(
@@ -765,12 +793,13 @@ def chat():
 
             return jsonify({"reply": assistant_reply, "thread_id": thread_id, "message_timestamp": message_timestamp}), 200
 
-        except ConnectionResetError as e:
-            print(f"[CHAT] [{client}] ConnectionResetError on attempt {attempt}/{max_retries}: {e}")
+        except (ConnectionResetError, json.JSONDecodeError) as e:
+            err_type = "ConnectionResetError" if isinstance(e, ConnectionResetError) else "JSONDecodeError"
+            print(f"[CHAT] [{client}] {err_type} on attempt {attempt}/{max_retries}: {e}")
             if attempt < max_retries:
                 time.sleep(2 ** attempt)  # 2s, 4s backoff
             else:
-                threading.Thread(target=_save_error_log, args=(e, logged_in_user, "chat_connection_reset"), daemon=True).start()
+                threading.Thread(target=_save_error_log, args=(e, logged_in_user, f"chat_{err_type.lower()}"), daemon=True).start()
                 return jsonify({"error": "Something went wrong. Please try again."}), 500
 
         except Exception as e:
