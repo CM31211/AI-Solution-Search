@@ -3,7 +3,8 @@
     "allow": [
       "WebSearch",
       "Bash(antenv/Scripts/pip install -r requirements.txt)",
-      "Bash(ls \"c:\\\\Chandan\\\\AI\\\\Agents\\\\SolutionSearch\\\\Code\"/*.py)"
+      "Bash(ls \"c:\\\\Chandan\\\\AI\\\\Agents\\\\SolutionSearch\\\\Code\"/*.py)",
+      "Bash(awk '{if \\(NF==0\\) next; depth=gsub\\(/\\\\//, \"/\"\\); printf \"%*s%s\\\\n\", depth*2, \"\", substr\\($0, length\\($0\\)-length\\(substr\\($0,index\\($0,\"/\"\\)\\)\\)+2\\)}')"
     ]
   }
 }

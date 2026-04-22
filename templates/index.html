@@ -4,7 +4,6 @@
   <meta charset="utf-8" />
   <title>AI Solution Search</title>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="https://res.cdn.office.net/teams-js/2.22.0/js/MicrosoftTeams.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
 
@@ -511,166 +510,16 @@
   </div>
 
   <script>
-    // ── Teams Silent SSO ──
-    let _teamsToken = null;
-
-    let _teamsAuthError = null;
-
-    async function _getTeamsToken() {
-      return new Promise((resolve) => {
-        microsoftTeams.authentication.getAuthToken({
-          successCallback: (token) => { _teamsToken = token; resolve(token); },
-          failureCallback: (error) => { _teamsAuthError = error; resolve(null); }
-        });
-      });
-    }
-
-    async function _getTeamsTokenWithConsent() {
-      // First try silent token acquisition
-      const token = await _getTeamsToken();
-      if (token) return token;
-
-      // If silent failed due to consent, trigger consent popup then retry
-      if (_teamsAuthError && (_teamsAuthError.includes("consent") || _teamsAuthError.includes("interaction"))) {
-        try {
-          await new Promise((resolve, reject) => {
-            microsoftTeams.authentication.authenticate({
-              url: window.location.origin + "/auth-start",
-              width: 600,
-              height: 535,
-              successCallback: resolve,
-              failureCallback: reject
-            });
-          });
-          // Consent granted — retry silent token acquisition
-          return await _getTeamsToken();
-        } catch {
-          return null;
-        }
-      }
-      return null;
-    }
-
-    let _isTeamsContext = false;
-    let _teamsInitDone = false;
-
-    async function initTeams() {
-      try {
-        await microsoftTeams.app.initialize();
-        _isTeamsContext = true;
-        const token = await _getTeamsTokenWithConsent();
-        if (!token) {
-          // In Teams but token acquisition failed — block UI and show retry option
-          const errDetail = _teamsAuthError ? `<div style="color:#888;font-size:12px;margin-bottom:12px;word-break:break-all;">${_teamsAuthError}</div>` : "";
-          document.getElementById("messages").innerHTML =
-            '<div style="padding:20px;text-align:center;">' +
-            '<div style="color:#c0392b;font-size:14px;margin-bottom:8px;">Authentication failed. Please try again or contact your administrator.</div>' +
-            errDetail +
-            '<button onclick="initTeams()" style="padding:8px 20px;background:#111;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;">Retry</button>' +
-            '</div>';
-          document.querySelector(".input-area").style.display = "none";
-          _teamsInitDone = true;
-          return;
-        }
-      } catch {
-        // Not in Teams context — browser path, Easy Auth handles authentication
-        _isTeamsContext = false;
-        _teamsToken = null;
-      }
-      // Auth passed (or not in Teams) — show greeting
-      _teamsInitDone = true;
-      addBubble("Hi! Describe your client's situation, and I'll help identify EisnerAmper's relevant capabilities, experience, and solutions.", "assistant");
-      loadCurrentUser();
-      loadSidebarHistory();
-    }
-
-    initTeams();
-
     function _authHeaders() {
-      const h = { "Content-Type": "application/json" };
-      // Use X-Teams-Token instead of Authorization: Bearer.
-      // Easy Auth intercepts and validates the standard Authorization header —
-      // rejecting tokens from the Teams app registration (different audience).
-      // Custom headers are invisible to Easy Auth, so the request passes straight
-      // through to Flask which validates the token itself.
-      if (_teamsToken) h["X-Teams-Token"] = "Bearer " + _teamsToken;
-      return h;
+      return { "Content-Type": "application/json" };
     }
 
-    // ── Central fetch wrapper ──
-    // Uses redirect:'manual' so Easy Auth 302 redirects return type='opaqueredirect'
-    // instead of causing a CORS crash.
-    //
-    // Browser:        redirect full page to /.auth/login/aad to establish session cookie
-    // Teams Desktop:  open /.auth/login/aad in a Teams popup to establish session cookie
-    //                 in Electron's cookie store, then retry the request automatically
-    // Teams Web:      throw — Teams Web inherits browser session so this shouldn't happen
-    let _teamsDesktopSessionEstablished = false;
-
-    function _setTeamsStatusMessage(msg) {
-      const el = document.getElementById("sidebarHistory");
-      if (el) el.innerHTML = `<div style="color:#aaa;font-size:12px;padding:8px 12px;">${msg}</div>`;
-    }
-
-    async function _teamsSessionLogin() {
-      // Opens /.auth/login/aad in a Teams popup so Easy Auth sets a session cookie.
-      // /auth-end calls microsoftTeams.authentication.notifySuccess() to close the popup.
-      console.log("[TEAMS] Session not established — opening login popup to authenticate with Easy Auth...");
-      _setTeamsStatusMessage("Signing in to Teams session...");
-      return new Promise((resolve, reject) => {
-        microsoftTeams.authentication.authenticate({
-          url: window.location.origin + "/.auth/login/aad?post_login_redirect_uri=" + encodeURIComponent("/auth-end"),
-          width: 600,
-          height: 535,
-          successCallback: () => {
-            console.log("[TEAMS] Login popup succeeded — session cookie established");
-            _setTeamsStatusMessage("Signed in. Loading history...");
-            _teamsDesktopSessionEstablished = true;
-            resolve();
-          },
-          failureCallback: (err) => {
-            console.error("[TEAMS] Login popup failed:", err);
-            _setTeamsStatusMessage("Sign-in failed. Please reload.");
-            reject(new Error("Teams session login failed: " + err));
-          }
-        });
-      });
-    }
-
+    // Central fetch wrapper — redirects to AAD login if Easy Auth blocks the request
     async function _apiFetch(url, options = {}) {
       const res = await fetch(url, { ...options, redirect: "manual" });
-
-      // Easy Auth 302 → opaqueredirect (no session cookie)
-      // Easy Auth 401 → Bearer token rejected by Easy Auth before reaching Flask
-      const needsLogin = res.type === "opaqueredirect" || res.status === 401;
-
-      if (needsLogin) {
-        console.log(`[TEAMS] ${url} blocked by Easy Auth (status=${res.status} type=${res.type}) — needs login`);
-        if (!_isTeamsContext) {
-          // Browser — redirect full page to AAD login to establish session cookie
-          console.log("[BROWSER] Redirecting to /.auth/login/aad for session login");
-          window.location.href = "/.auth/login/aad?post_login_redirect_uri=" + encodeURIComponent("/");
-          await new Promise(() => {}); // halt — page is navigating away
-        }
-        // Teams (Web or Desktop) — open /.auth/login/aad popup to establish session cookie
-        if (!_teamsDesktopSessionEstablished) {
-          await _teamsSessionLogin();
-          // Retry without Bearer token — session cookie now drives auth through Easy Auth
-          console.log(`[TEAMS] Retrying ${url} after session login (without Bearer token)...`);
-          const retryOptions = { ...options };
-          if (retryOptions.headers) {
-            const h = { ...retryOptions.headers };
-            delete h["Authorization"];
-            retryOptions.headers = h;
-          }
-          const retry = await fetch(url, { ...retryOptions, redirect: "manual" });
-          console.log(`[TEAMS] Retry result: status=${retry.status} type=${retry.type}`);
-          if (retry.type === "opaqueredirect" || retry.status === 401) {
-            throw new Error("Authentication required after login");
-          }
-          return retry;
-        }
-        throw new Error("Authentication required");
+      if (res.type === "opaqueredirect" || res.status === 401) {
+        window.location.href = "/.auth/login/aad?post_login_redirect_uri=" + encodeURIComponent("/");
+        await new Promise(() => {}); // halt — page is navigating away
       }
       return res;
     }
@@ -700,7 +549,7 @@
           const data = await res.json();
           document.getElementById("sidebarUserName").textContent = data.display_name || "AI Solution Search";
         }
-      } catch { /* silent — _apiFetch already handles redirect for browser */ }
+      } catch { /* silent */ }
     }
 
     // ── Textarea auto-resize ──
@@ -815,9 +664,7 @@
       const msg = inputEl.value.trim();
       if (!msg) return;
 
-      // Hide history panel, show messages
       showChatView();
-
       addBubble(msg, "user");
       inputEl.value = "";
       inputEl.style.height = "auto";
@@ -829,24 +676,13 @@
       const timeoutId = setTimeout(() => controller.abort(), 180000);
 
       try {
-        let res = await _apiFetch("/chat", {
+        const res = await _apiFetch("/chat", {
           method: "POST",
           headers: _authHeaders(),
           body: JSON.stringify({ message: msg }),
           signal: controller.signal
         });
         clearTimeout(timeoutId);
-
-        if (res.status === 401 && _teamsToken) {
-          // Teams token may have expired — refresh and retry once
-          await _getTeamsToken();
-          res = await _apiFetch("/chat", {
-            method: "POST",
-            headers: _authHeaders(),
-            body: JSON.stringify({ message: msg }),
-            signal: controller.signal
-          });
-        }
 
         const contentType = res.headers.get("content-type") || "";
         let data;
@@ -1036,7 +872,10 @@
       _currentThreadId = threadId;
     }
 
-    // ── Init ── (handled inside initTeams())
+    // ── Init ──
+    addBubble("Hi! Describe your client's situation, and I'll help identify EisnerAmper's relevant capabilities, experience, and solutions.", "assistant");
+    loadCurrentUser();
+    loadSidebarHistory();
   </script>
 </body>
 </html>

@@ -5,4 +5,3 @@ azure-identity==1.25.2
 azure-ai-agents==1.1.0
 azure-storage-blob==12.28.0
 python-dotenv==1.2.2
-PyJWT[crypto]==2.9.0
