@@ -10,28 +10,12 @@ from dotenv import load_dotenv
 import time
 import json
 import threading
-import jwt
-from jwt import PyJWKClient
 
 # ---- Load .env file for local dev (ignored on Azure if no .env file exists) ----
 load_dotenv()
 
 app = Flask(__name__)
 
-@app.after_request
-def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Teams-Token"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    return response
-
-@app.route("/chat", methods=["OPTIONS"])
-@app.route("/history", methods=["OPTIONS"])
-@app.route("/feedback", methods=["OPTIONS"])
-@app.route("/reset", methods=["OPTIONS"])
-@app.route("/me", methods=["OPTIONS"])
-def handle_options():
-    return "", 204
 
 @app.get("/health")
 def health():
@@ -52,9 +36,7 @@ print(f"[STARTUP] AZURE_STORAGE_ACCOUNT_URL={'set' if _STORAGE_ACCOUNT_URL else 
 print(f"[STARTUP] AZURE_STORAGE_CONNECTION_STRING={'set' if _STORAGE_CONNECTION_STRING else 'NOT SET'}")
 print(f"[STARTUP] BLOB_CONTAINER={_BLOB_CONTAINER or 'NOT SET'}")
 print(f"[STARTUP] LOGS_BLOB_CONTAINER={os.environ.get('LOGS_BLOB_CONTAINER') or 'NOT SET'}")
-print(f"[STARTUP] AAD_TENANT_ID={'set' if os.environ.get('AAD_TENANT_ID') else 'NOT SET'}")
-print(f"[STARTUP] AAD_CLIENT_ID={os.environ.get('AAD_CLIENT_ID', 'NOT SET')}")
-print(f"[STARTUP] WEBAPP_FQDN={os.environ.get('WEBAPP_FQDN', 'NOT SET')}")
+
 print(f"[STARTUP] PROJECT_ENDPOINT={'set' if os.environ.get('PROJECT_ENDPOINT') else 'NOT SET'}")
 print(f"[STARTUP] AGENT_ID={os.environ.get('AGENT_ID', 'NOT SET')}")
 
@@ -203,14 +185,11 @@ def append_contact_note(reply_text: str, service_line: str, contact_map: dict) -
 
 @app.route("/feedback", methods=["POST"])
 def feedback():
-    client = _detect_client()
-    user, err = _require_user()
-    if err:
-        return err
+    user = _get_user()
     data = request.get_json(silent=True) or {}
     feedback_type = data.get("feedback", "unknown")
     thread_id = data.get("thread_id", "unknown")
-    print(f"[FEEDBACK] [{client}] user={user} type={feedback_type} thread_id={thread_id}")
+    print(f"[FEEDBACK] user={user} type={feedback_type} thread_id={thread_id}")
 
     # [LOGGING] Fire-and-forget background thread — never blocks response
     threading.Thread(target=_embed_feedback_in_conversation, args=(user, data), daemon=True).start()
@@ -305,138 +284,14 @@ def _save_positive_feedback(username: str, message_timestamp: str, conversation:
 
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-key-change-me")
 
-# ---- Azure AD / Teams SSO config ----
-AAD_TENANT_ID = os.environ.get("AAD_TENANT_ID", "")
-AAD_CLIENT_ID = os.environ.get("AAD_CLIENT_ID", "")
-WEBAPP_FQDN   = os.environ.get("WEBAPP_FQDN", "")
 
-_jwks_client = None
-_jwks_client_lock = threading.Lock()
-
-def _get_jwks_client() -> PyJWKClient:
-    global _jwks_client
-    if _jwks_client is None:
-        with _jwks_client_lock:
-            if _jwks_client is None:
-                jwks_url = f"https://login.microsoftonline.com/{AAD_TENANT_ID}/discovery/v2.0/keys"
-                print(f"[AUTH] Initialising JWKS client: {jwks_url}")
-                _jwks_client = PyJWKClient(jwks_url, cache_keys=True)
-    return _jwks_client
-
-def _validate_teams_token(token: str) -> bool:
-    """Validate an AAD Bearer token issued by Teams SSO. Returns True if valid.
-    Checks: signature, algorithm, audience, issuer, expiry, and access_as_user scope.
-    """
-    if not AAD_TENANT_ID or not AAD_CLIENT_ID:
-        print("[AUTH] _validate_teams_token: AAD_TENANT_ID or AAD_CLIENT_ID not configured")
-        return False
-    try:
-        signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
-        expected_audiences = [
-            AAD_CLIENT_ID,
-            f"api://{AAD_CLIENT_ID}",
-            f"api://{WEBAPP_FQDN}/{AAD_CLIENT_ID}"
-        ]
-        decoded = jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=["RS256"],
-            audience=expected_audiences,
-            issuer=[
-                f"https://sts.windows.net/{AAD_TENANT_ID}/",
-                f"https://login.microsoftonline.com/{AAD_TENANT_ID}/v2.0"
-            ],
-            options={"require": ["exp", "aud", "iss"]}
-        )
-        # Log key claims for verification (no sensitive data — upn is email)
-        scp  = decoded.get("scp", "")
-        upn  = decoded.get("upn") or decoded.get("preferred_username", "unknown")
-        aud  = decoded.get("aud", "")
-        iss  = decoded.get("iss", "")
-        exp  = decoded.get("exp", 0)
-        exp_dt = datetime.fromtimestamp(exp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if exp else "none"
-        print(f"[AUTH] Token decoded — upn={upn} aud={aud} iss={iss} scp='{scp}' exp={exp_dt}")
-
-        # Enforce access_as_user scope — scp is a space-separated string
-        if "access_as_user" not in scp.split():
-            msg = f"Teams token rejected: 'access_as_user' scope missing (scp='{scp}')"
-            print(f"[AUTH] {msg}")
-            threading.Thread(target=_save_error_log, args=(msg, _UNAUTHENTICATED_USER, "teams_token_scope"), daemon=True).start()
-            return False
-        print(f"[AUTH] Token valid for user={upn}")
-        return True
-    except Exception as e:
-        print(f"[AUTH] Teams token validation failed: {e}")
-        threading.Thread(target=_save_error_log, args=(e, _UNAUTHENTICATED_USER, "teams_token_validation"), daemon=True).start()
-        return False
-
-
-def _detect_client() -> str:
-    """
-    Detects whether the request is coming from Browser, Teams Web, or Teams Desktop.
-
-    Detection logic:
-      - X-Teams-Token present + "Electron" in User-Agent → "Teams Desktop"
-      - X-Teams-Token present + no "Electron"            → "Teams Web"
-      - No X-Teams-Token + Easy Auth headers present     → "Browser"
-      - Nothing                                          → "Local Dev"
-
-    Note: Teams clients send X-Teams-Token (custom header) instead of
-    Authorization: Bearer — this bypasses Easy Auth's token validation entirely
-    so the token reaches Flask for proper validation.
-    """
-    teams_token    = request.headers.get("X-Teams-Token", "")
-    easy_auth_user = request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME") or \
-                     request.headers.get("X-MS-CLIENT-PRINCIPAL-ID")
-    user_agent     = request.headers.get("User-Agent", "")
-
-    if teams_token:
-        return "Teams Desktop" if "Electron" in user_agent else "Teams Web"
-    if easy_auth_user:
-        return "Browser"
-    return "Local Dev"
-
-
-def _require_user() -> tuple:
-    """
-    Returns (user, error_response) for all API routes.
-    Accepts either:
-      - X-Teams-Token header (Teams path) — custom header invisible to Easy Auth
-      - Easy Auth headers (browser path)  — X-MS-CLIENT-PRINCIPAL-NAME / ID
-    Falls back to Unknown for local dev (no headers at all).
-    """
-    teams_token_header = request.headers.get("X-Teams-Token", "")
-    easy_auth_user = (
+def _get_user() -> str:
+    """Returns the logged-in user from Easy Auth headers, or 'Unknown' for local dev."""
+    return (
         request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME") or
-        request.headers.get("X-MS-CLIENT-PRINCIPAL-ID")
+        request.headers.get("X-MS-CLIENT-PRINCIPAL-ID") or
+        _UNAUTHENTICATED_USER
     )
-    client = _detect_client()
-    user_agent = request.headers.get("User-Agent", "")
-    print(f"[AUTH] {request.method} {request.path} — "
-          f"client='{client}' "
-          f"teams_token={'present' if teams_token_header else 'absent'} "
-          f"easy_auth_user={easy_auth_user or 'absent'} "
-          f"user_agent={user_agent[:80]!r}")
-
-    if teams_token_header:
-        # Teams path — validate token from custom header (bypasses Easy Auth interception)
-        token = teams_token_header.removeprefix("Bearer ").strip()
-        print(f"[AUTH] [{client}] Teams token received (length={len(token)}) — validating...")
-        if not _validate_teams_token(token):
-            print(f"[AUTH] [{client}] Token validation FAILED for {request.path} — returning 401")
-            return None, (jsonify({"error": "Unauthorized"}), 401)
-        resolved_user = easy_auth_user or _UNAUTHENTICATED_USER
-        print(f"[AUTH] [{client}] Token valid — resolved user={resolved_user}")
-        return resolved_user, None
-
-    if easy_auth_user:
-        # Browser path — Easy Auth already authenticated the user
-        print(f"[AUTH] [{client}] Easy Auth — user={easy_auth_user}")
-        return easy_auth_user, None
-
-    # No token, no Easy Auth — local dev only
-    print(f"[AUTH] [{client}] No auth headers — falling back to Unknown")
-    return _UNAUTHENTICATED_USER, None
 
 # ---- Azure AI Foundry setup (loaded from .env locally / App Settings on Azure) ----
 PROJECT_ENDPOINT = os.getenv("PROJECT_ENDPOINT")
@@ -501,7 +356,7 @@ def get_or_create_thread_id() -> str:
     return session["thread_id"]
 
 
-def _cancel_active_runs(thread_id: str, client_label: str) -> None:
+def _cancel_active_runs(thread_id: str) -> None:
     """Cancel any stuck active runs on the thread before adding a new message.
     Prevents 'Can't add messages while a run is active' errors caused by
     aborted/timed-out previous requests leaving a run in a non-terminal state.
@@ -511,18 +366,18 @@ def _cancel_active_runs(thread_id: str, client_label: str) -> None:
         runs = list(project.agents.runs.list(thread_id=thread_id))
         for run in runs:
             if run.status in _active_statuses:
-                print(f"[CHAT] [{client_label}] Cancelling stuck run {run.id} (status={run.status}) on thread {thread_id}")
+                print(f"[CHAT] Cancelling stuck run {run.id} (status={run.status}) on thread {thread_id}")
                 project.agents.runs.cancel(thread_id=thread_id, run_id=run.id)
                 for _ in range(10):
                     time.sleep(1)
                     updated = project.agents.runs.get(thread_id=thread_id, run_id=run.id)
                     if updated.status not in _active_statuses:
-                        print(f"[CHAT] [{client_label}] Run {run.id} cancelled — final status={updated.status}")
+                        print(f"[CHAT] Run {run.id} cancelled — final status={updated.status}")
                         break
                 else:
-                    print(f"[CHAT] [{client_label}] Warning: run {run.id} did not reach terminal state after 10s")
+                    print(f"[CHAT] Warning: run {run.id} did not reach terminal state after 10s")
     except Exception as e:
-        print(f"[CHAT] [{client_label}] Warning: could not check/cancel active runs on thread {thread_id}: {e}")
+        print(f"[CHAT] Warning: could not check/cancel active runs on thread {thread_id}: {e}")
 
 
 def validate_sme_names(text: str) -> str:
@@ -659,38 +514,6 @@ def index():
     return render_template("index.html")
 
 
-@app.route("/auth-start")
-def auth_start():
-    """Teams SSO consent start page — opens Azure AD consent in a popup."""
-    tenant_id = AAD_TENANT_ID or "common"
-    client_id = AAD_CLIENT_ID
-    redirect_uri = request.host_url.rstrip("/") + "/auth-end"
-    scope = f"api://{WEBAPP_FQDN}/{client_id}/access_as_user"
-    print(f"[AUTH] /auth-start — tenant={tenant_id} client={client_id} redirect={redirect_uri} scope={scope}")
-    auth_url = (
-        f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize"
-        f"?client_id={client_id}"
-        f"&response_type=token"
-        f"&redirect_uri={redirect_uri}"
-        f"&scope={scope}"
-        f"&prompt=consent"
-    )
-    return f'<script>window.location.href = "{auth_url}";</script>'
-
-
-@app.route("/auth-end")
-def auth_end():
-    """Teams SSO auth completion page — called after consent redirect."""
-    print("[AUTH] /auth-end called — notifying Teams consent success")
-    return """<!DOCTYPE html><html><head>
-    <script src="https://res.cdn.office.net/teams-js/2.22.0/js/MicrosoftTeams.min.js"></script>
-    <script>
-      microsoftTeams.app.initialize().then(() => {
-        microsoftTeams.authentication.notifySuccess();
-      });
-    </script>
-    </head><body></body></html>"""
-
 
 @app.route("/me", methods=["GET"])
 def me():
@@ -708,12 +531,9 @@ def me():
 @app.route("/history", methods=["GET"])
 def history():
     """[HISTORY] Returns all conversation logs for the currently logged-in user."""
-    client = _detect_client()
-    user, err = _require_user()
-    if err:
-        return err
+    user = _get_user()
     username = user.split("@")[0] if "@" in user else user
-    print(f"[HISTORY] [{client}] Loading history for user={username}")
+    print(f"[HISTORY] Loading history for user={username}")
     try:
         container_client = _blob_service.get_container_client(_LOGS_CONTAINER)
 
@@ -738,20 +558,17 @@ def history():
                     conversations.append(json.loads(data.decode("utf-8")))
                 except Exception as e:
                     print(f"[HISTORY] Failed to read blob {blob.name}: {e}")
-        print(f"[HISTORY] [{client}] Scan complete — blobs_scanned={blobs_scanned} blobs_matched={blobs_matched} conversations_loaded={len(conversations)}")
+        print(f"[HISTORY] Scan complete — blobs_scanned={blobs_scanned} blobs_matched={blobs_matched} conversations_loaded={len(conversations)}")
         # Sort newest date first
         conversations.sort(key=lambda c: c.get("date", ""), reverse=True)
         return jsonify({"conversations": conversations})
     except Exception as e:
-        print(f"[HISTORY] [{client}] Failed to list conversations: {e}")
+        print(f"[HISTORY] Failed to list conversations: {e}")
         return jsonify({"conversations": []})
 
 
 @app.route("/reset", methods=["POST"])
 def reset():
-    _, err = _require_user()
-    if err:
-        return err
     old_thread = session.pop("thread_id", None)
     print(f"[RESET] Session thread cleared — old_thread_id={old_thread or 'none'}")
     return jsonify({"ok": True})
@@ -759,29 +576,26 @@ def reset():
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    client = _detect_client()
-    logged_in_user, err = _require_user()
-    if err:
-        return err
+    logged_in_user = _get_user()
     _startup_ready.wait()  # block until background startup finishes
     if _startup_error:
-        print(f"[CHAT] [{client}] Startup error prevented chat: {_startup_error}")
+        print(f"[CHAT] Startup error prevented chat: {_startup_error}")
         return jsonify({"error": "Service is not ready. Please try again shortly."}), 503
-    print(f"[CHAT] [{client}] Request from user={logged_in_user}")
+    print(f"[CHAT] Request from user={logged_in_user}")
 
     user_message = (request.get_json(silent=True) or {}).get("message", "").strip()
     if not user_message:
         return jsonify({"error": "Empty message"}), 400
-    print(f"[CHAT] [{client}] Message length={len(user_message)} chars")
+    print(f"[CHAT] Message length={len(user_message)} chars")
 
     max_retries = 3
     for attempt in range(1, max_retries + 1):
         try:
             thread_id = get_or_create_thread_id()
-            print(f"[CHAT] [{client}] Using thread_id={thread_id} (attempt {attempt}/{max_retries})")
+            print(f"[CHAT] Using thread_id={thread_id} (attempt {attempt}/{max_retries})")
 
             # Cancel any stuck runs before adding a message
-            _cancel_active_runs(thread_id, client)
+            _cancel_active_runs(thread_id)
 
             # Add user message
             project.agents.messages.create(
@@ -789,18 +603,18 @@ def chat():
                 role="user",
                 content=user_message
             )
-            print(f"[CHAT] [{client}] User message added to thread {thread_id}")
+            print(f"[CHAT] User message added to thread {thread_id}")
 
             # Run agent
-            print(f"[CHAT] [{client}] Starting agent run on thread {thread_id}")
+            print(f"[CHAT] Starting agent run on thread {thread_id}")
             run = project.agents.runs.create_and_process(
                 thread_id=thread_id,
                 agent_id=agent.id
             )
-            print(f"[CHAT] [{client}] Agent run completed — status={run.status} run_id={run.id}")
+            print(f"[CHAT] Agent run completed — status={run.status} run_id={run.id}")
 
             if run.status == "failed":
-                print(f"[CHAT] [{client}] Agent run FAILED: {run.last_error}")
+                print(f"[CHAT] Agent run FAILED: {run.last_error}")
                 return jsonify({"error": "Agent run failed"}), 500
 
             # Get latest assistant reply
@@ -808,7 +622,7 @@ def chat():
                 thread_id=thread_id,
                 order=ListSortOrder.ASCENDING
             ))
-            print(f"[CHAT] [{client}] Retrieved {len(messages)} messages from thread")
+            print(f"[CHAT] Retrieved {len(messages)} messages from thread")
 
             raw_reply = ""
             for msg in reversed(messages):
@@ -816,23 +630,23 @@ def chat():
                     raw_reply = msg.text_messages[-1].text.value
                     break
 
-            print(f"[CHAT] [{client}] Raw reply length={len(raw_reply)} chars")
+            print(f"[CHAT] Raw reply length={len(raw_reply)} chars")
             assistant_reply = clean_agent_response(raw_reply)
             assistant_reply = validate_sme_names(assistant_reply)
             service_line = classify_service_line(user_message)
-            print(f"[CHAT] [{client}] Service line classified as: {service_line}")
+            print(f"[CHAT] Service line classified as: {service_line}")
             assistant_reply = append_contact_note(assistant_reply, service_line, SERVICE_LINE_CONTACTS)
 
             # [LOGGING] Compute timestamp here so both the log and the client use the exact same value
             message_timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             threading.Thread(target=_save_conversation_log, args=(thread_id, logged_in_user, user_message, assistant_reply, message_timestamp), daemon=True).start()
-            print(f"[CHAT] [{client}] Response ready — thread_id={thread_id} timestamp={message_timestamp} reply_length={len(assistant_reply)} chars")
+            print(f"[CHAT] Response ready — thread_id={thread_id} timestamp={message_timestamp} reply_length={len(assistant_reply)} chars")
 
             return jsonify({"reply": assistant_reply, "thread_id": thread_id, "message_timestamp": message_timestamp}), 200
 
         except (ConnectionResetError, json.JSONDecodeError) as e:
             err_type = "ConnectionResetError" if isinstance(e, ConnectionResetError) else "JSONDecodeError"
-            print(f"[CHAT] [{client}] {err_type} on attempt {attempt}/{max_retries}: {e}")
+            print(f"[CHAT] {err_type} on attempt {attempt}/{max_retries}: {e}")
             if attempt < max_retries:
                 time.sleep(2 ** attempt)  # 2s, 4s backoff
             else:
@@ -840,7 +654,7 @@ def chat():
                 return jsonify({"error": "Something went wrong. Please try again."}), 500
 
         except Exception as e:
-            print(f"[CHAT] [{client}] Error: {e}")
+            print(f"[CHAT] Error: {e}")
             threading.Thread(target=_save_error_log, args=(e, logged_in_user, "chat"), daemon=True).start()
             return jsonify({"error": "Something went wrong. Please try again."}), 500
 
