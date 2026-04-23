@@ -71,7 +71,8 @@ def _load_json_from_blob(blob_name: str) -> dict:
     return json.loads(data.decode("utf-8"))
 
 # [LOGGING] Separate container for conversation logs (read from environment variable)
-_LOGS_CONTAINER = os.environ.get("LOGS_BLOB_CONTAINER")
+_LOGS_CONTAINER  = os.environ.get("LOGS_BLOB_CONTAINER")
+_FEEDBACK_FOLDER = os.environ.get("FEEDBACK_FOLDER")
 
 
 def _save_conversation_log(thread_id: str, user: str, query: str, response: str, message_timestamp: str) -> None:
@@ -259,12 +260,48 @@ def _embed_feedback_in_conversation(user: str, data: dict) -> None:
         if updated:
             blob_client.upload_blob(json.dumps(conversation, indent=2), overwrite=True)
             print(f"[LOGGING] Feedback '{feedback_type}' embedded in {blob_name}")
+            if feedback_type == "like":
+                _save_positive_feedback(username, message_timestamp, conversation)
         else:
             print(f"[LOGGING] No matching message found for timestamp {message_timestamp} in {blob_name}")
 
     except Exception as e:
         print(f"[LOGGING] Failed to embed feedback: {e}")
         _save_error_log(e, user, "feedback")
+
+
+def _save_positive_feedback(username: str, message_timestamp: str, conversation: dict) -> None:
+    """
+    [FEEDBACK] Saves a liked message to BLOB_CONTAINER/FEEDBACK_FOLDER/ for positive-feedback analysis.
+    Blob path: <FEEDBACK_FOLDER>/feedback_<MMDDYYYYHHmmssffff>_<username>.json
+    Runs silently — never raises.
+    """
+    try:
+        if not _FEEDBACK_FOLDER:
+            print("[FEEDBACK] FEEDBACK_FOLDER not configured — skipping positive feedback save")
+            return
+
+        now  = datetime.now(timezone.utc)
+        ffff = str(now.microsecond).zfill(6)[:4]
+        filename = f"feedback_{now.strftime('%m%d%Y%H%M%S')}{ffff}_{username}.json"
+        blob_name = f"{_FEEDBACK_FOLDER}/{filename}"
+
+        matched_message = next(
+            (m for m in conversation.get("messages", [])
+             if (m.get("timestamp", "")[:19]) == message_timestamp[:19]),
+            None
+        )
+
+        feedback_data = {
+            "query":    matched_message.get("query", "") if matched_message else "",
+            "response": matched_message.get("response", "") if matched_message else "",
+        }
+
+        blob_client = _blob_service.get_blob_client(container=_BLOB_CONTAINER, blob=blob_name)
+        blob_client.upload_blob(json.dumps(feedback_data, indent=2), overwrite=True)
+        print(f"[FEEDBACK] Positive feedback saved: {blob_name}")
+    except Exception as e:
+        print(f"[FEEDBACK] Failed to save positive feedback: {e}")
 
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-key-change-me")
 
