@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <title>AI Solution Search</title>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://res.cdn.office.net/teams-js/2.22.0/js/MicrosoftTeams.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
 
@@ -510,19 +511,125 @@
   </div>
 
   <script>
+    let _teamsToken = null;
+    let _isTeamsContext = false;
+
+    // ── Debug panel (Teams only) ──
+    let _debugPanelEl = null;
+    let _teamsDetected = false;   // true only after app.initialize() resolves
+    let _logBuffer = [];          // holds logs until Teams context is confirmed
+
+    function _createDebugPanel() {
+      const panel = document.createElement("div");
+      panel.id = "teamsDebugPanel";
+      panel.style.cssText = [
+        "position:fixed", "bottom:12px", "right:12px", "width:340px", "max-height:220px",
+        "overflow-y:auto", "background:#111", "color:#00e676", "font-family:monospace",
+        "font-size:11px", "line-height:1.5", "padding:8px 10px 8px 10px",
+        "border-radius:8px", "z-index:9999", "box-shadow:0 2px 16px rgba(0,0,0,0.5)",
+        "border:1px solid #333"
+      ].join(";");
+      const header = document.createElement("div");
+      header.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;border-bottom:1px solid #333;padding-bottom:4px;";
+      header.innerHTML = '<span style="color:#aaa;font-weight:bold;font-size:10px;">TEAMS SSO DEBUG</span>';
+      const closeBtn = document.createElement("span");
+      closeBtn.textContent = "✕";
+      closeBtn.style.cssText = "cursor:pointer;color:#888;font-size:12px;padding:0 2px;";
+      closeBtn.onclick = () => panel.remove();
+      header.appendChild(closeBtn);
+      panel.appendChild(header);
+      document.body.appendChild(panel);
+      return panel;
+    }
+
+    function _renderDebugLine(msg, level) {
+      if (!_debugPanelEl || !document.body.contains(_debugPanelEl)) return;
+      const ts = new Date().toISOString().substring(11, 19);
+      const color = level === "ERROR" ? "#ff5252" : level === "WARN" ? "#ffab40" : level === "OK" ? "#69f0ae" : "#00e676";
+      const line = document.createElement("div");
+      line.style.cssText = `color:${color};margin-bottom:2px;word-break:break-all;`;
+      line.textContent = `[${ts}] ${msg}`;
+      _debugPanelEl.appendChild(line);
+      _debugPanelEl.scrollTop = _debugPanelEl.scrollHeight;
+    }
+
+    function _confirmTeamsAndFlush() {
+      // Called once Teams context is confirmed — create panel and flush buffered logs
+      _teamsDetected = true;
+      _debugPanelEl = _createDebugPanel();
+      _logBuffer.forEach(({ msg, level }) => _renderDebugLine(msg, level));
+      _logBuffer = [];
+    }
+
+    function _debugLog(msg, level = "INFO") {
+      // Always mirror to server Log Stream (visible in Azure Log Stream for all contexts)
+      fetch("/log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: msg, level })
+      }).catch(() => {});
+
+      if (!_teamsDetected) {
+        _logBuffer.push({ msg, level }); // buffer until Teams context confirmed
+        return;
+      }
+      _renderDebugLine(msg, level);      // Teams confirmed — render directly
+    }
+
     function _authHeaders() {
-      return { "Content-Type": "application/json" };
+      const headers = { "Content-Type": "application/json" };
+      if (_teamsToken) headers["Authorization"] = "Bearer " + _teamsToken;
+      return headers;
     }
 
     async function _apiFetch(url, options = {}) {
       const res = await fetch(url, { ...options, redirect: "manual" });
       if (res.type === "opaqueredirect" || res.status === 401) {
+        if (_isTeamsContext) {
+          // Token may have expired — refresh it and retry once
+          try {
+            _debugLog("Token rejected (401) — refreshing Teams SSO token...", "WARN");
+            _teamsToken = await microsoftTeams.authentication.getAuthToken();
+            _debugLog("Token refreshed — retrying request", "OK");
+            const retryHeaders = { ...(options.headers || {}), "Authorization": "Bearer " + _teamsToken };
+            return await fetch(url, { ...options, headers: retryHeaders, redirect: "manual" });
+          } catch (e) {
+            _debugLog(`Token refresh failed: ${e?.message || e}`, "ERROR");
+            return res;
+          }
+        }
         window.location.href = "/.auth/login/aad?post_login_redirect_uri=" + encodeURIComponent("/");
         await new Promise(() => {}); // halt — page is navigating away
       }
       return res;
     }
 
+    async function _initApp() {
+      _debugLog("_initApp() started");
+      try {
+        _debugLog("Waiting for microsoftTeams.app.initialize() [1500ms timeout]...");
+        await Promise.race([
+          microsoftTeams.app.initialize(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("timeout after 1500ms")), 1500))
+        ]);
+        _confirmTeamsAndFlush(); // Teams confirmed — panel appears now, buffered logs flushed
+        _debugLog("app.initialize() resolved — Teams context confirmed", "OK");
+
+        _debugLog("Waiting for getAuthToken()...");
+        _teamsToken = await microsoftTeams.authentication.getAuthToken();
+        _isTeamsContext = true;
+        _debugLog(`getAuthToken() succeeded — token length=${_teamsToken.length}`, "OK");
+      } catch (err) {
+        const msg = err?.message || String(err) || "unknown error";
+        _debugLog(`Teams SSO failed: ${msg} — falling back to browser mode`, "WARN");
+        _isTeamsContext = false;
+        _teamsToken = null;
+      }
+      _debugLog(`Init done — isTeamsContext=${_isTeamsContext} hasToken=${!!_teamsToken}`);
+      addBubble("Hi! Describe your client's situation, and I'll help identify EisnerAmper's relevant capabilities, experience, and solutions.", "assistant");
+      loadCurrentUser();
+      loadSidebarHistory();
+    }
 
     // ── Sidebar ──
     let _sidebarCollapsed = false;
@@ -877,9 +984,7 @@
     }
 
     // ── Init ──
-    addBubble("Hi! Describe your client's situation, and I'll help identify EisnerAmper's relevant capabilities, experience, and solutions.", "assistant");
-    loadCurrentUser();
-    loadSidebarHistory();
+    _initApp();
   </script>
 </body>
 </html>

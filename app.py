@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 import time
 import json
 import threading
+import jwt
+from jwt import PyJWKClient
 
 # ---- Load .env file for local dev (ignored on Azure if no .env file exists) ----
 load_dotenv()
@@ -183,6 +185,15 @@ def append_contact_note(reply_text: str, service_line: str, contact_map: dict) -
     note = f"\n\nFor further discussion or service-specific inquiries, please contact **{contact}**."
     return (reply_text or "").rstrip() + note
 
+@app.route("/log", methods=["POST"])
+def client_log():
+    data = request.get_json(silent=True) or {}
+    msg   = data.get("message", "")
+    level = data.get("level", "INFO")
+    print(f"[CLIENT-{level}] {msg}")
+    return {"ok": True}
+
+
 @app.route("/feedback", methods=["POST"])
 def feedback():
     user = _get_user()
@@ -284,14 +295,85 @@ def _save_positive_feedback(username: str, message_timestamp: str, conversation:
 
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-key-change-me")
 
+# ---- Azure AD config for OBO token validation ----
+_AAD_TENANT_ID  = os.environ.get("AAD_TENANT_ID", "")
+_AAD_CLIENT_ID  = os.environ.get("AAD_CLIENT_ID", "")
+# WEBSITE_HOSTNAME is auto-injected by Azure App Service (e.g. webapp-sb-...azurewebsites.net)
+WEBAPP_FQDN = os.environ.get("WEBAPP_FQDN", "")
+
+_jwks_client = None
+_jwks_client_lock = threading.Lock()
+
+def _get_jwks_client() -> PyJWKClient:
+    global _jwks_client
+    if _jwks_client is None:
+        with _jwks_client_lock:
+            if _jwks_client is None:
+                _jwks_client = PyJWKClient(
+                    f"https://login.microsoftonline.com/{_AAD_TENANT_ID}/discovery/v2.0/keys",
+                    cache_keys=True
+                )
+    return _jwks_client
+
+
+def _validate_bearer_token(token: str) -> str | None:
+    """
+    Validates an AAD Bearer token (Teams SSO token).
+    Returns the user's UPN/email on success, None on failure.
+    Accepts both App ID URI formats:
+      api://<clientId>                        (no-domain format)
+      api://<hostname>/<clientId>             (recommended domain format)
+    """
+    if not _AAD_TENANT_ID or not _AAD_CLIENT_ID:
+        return None
+    try:
+        signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
+        audiences = [_AAD_CLIENT_ID, f"api://{_AAD_CLIENT_ID}"]
+        if WEBAPP_FQDN:
+            audiences.append(f"api://{WEBAPP_FQDN}/{_AAD_CLIENT_ID}")
+        decoded = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=audiences,
+            issuer=[
+                f"https://sts.windows.net/{_AAD_TENANT_ID}/",
+                f"https://login.microsoftonline.com/{_AAD_TENANT_ID}/v2.0"
+            ],
+            options={"require": ["exp", "aud", "iss"]}
+        )
+        upn = decoded.get("upn") or decoded.get("preferred_username")
+        print(f"[OBO] Token valid — user={upn}")
+        return upn
+    except Exception as e:
+        print(f"[OBO] Token validation failed: {e}")
+        return None
+
 
 def _get_user() -> str:
-    """Returns the logged-in user from Easy Auth headers, or 'Unknown' for local dev."""
-    return (
+    """
+    Returns the logged-in user.
+    Browser: Easy Auth injects X-MS-CLIENT-PRINCIPAL-NAME.
+    Teams:   Validates Authorization: Bearer token (OBO SSO flow).
+    Falls back to Unknown for local dev.
+    """
+    # Browser path — Easy Auth already authenticated the user
+    easy_auth_user = (
         request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME") or
-        request.headers.get("X-MS-CLIENT-PRINCIPAL-ID") or
-        _UNAUTHENTICATED_USER
+        request.headers.get("X-MS-CLIENT-PRINCIPAL-ID")
     )
+    if easy_auth_user:
+        return easy_auth_user
+
+    # Teams OBO path — validate Bearer token sent by Teams client
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[len("Bearer "):]
+        user = _validate_bearer_token(token)
+        if user:
+            return user
+
+    return _UNAUTHENTICATED_USER
 
 # ---- Azure AI Foundry setup (loaded from .env locally / App Settings on Azure) ----
 PROJECT_ENDPOINT = os.getenv("PROJECT_ENDPOINT")
@@ -517,11 +599,7 @@ def index():
 
 @app.route("/me", methods=["GET"])
 def me():
-    logged_in_user = (
-        request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME") or
-        request.headers.get("X-MS-CLIENT-PRINCIPAL-ID") or
-        _UNAUTHENTICATED_USER
-    )
+    logged_in_user = _get_user()
     local_part = logged_in_user.split("@")[0] if "@" in logged_in_user else logged_in_user
     display_name = " ".join(p.capitalize() for p in local_part.split("."))
     print(f"[ME] user={logged_in_user} display_name={display_name}")
